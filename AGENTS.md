@@ -1,25 +1,19 @@
 # Review Extension
 
-Pi extension: automated code review loop between two AI models. See [README.md](README.md) for features, install, and usage.
+Two-model code review loop for pi. See [README.md](README.md) for install, usage, and features.
 
-## Keep docs current
+## Docs
 
-Update `README.md` when adding features, commands, or config options. Update `AGENTS.md` when changing dev workflow or coding patterns. Update `docs/E2E_TESTS.md` when adding test scenarios.
+Update `README.md` when you change features, commands, or config. Update this file when you change dev workflow. Update `docs/E2E_TESTS.md` when you add test scenarios.
 
 ## Code
 
-Eight modules in the root — split by responsibility, not by layer. `index.ts` is the entry point (state machine + commands). Other files are pure functions with no pi dependency.
+Modules split by responsibility. `index.ts` is the entry point (state machine + commands). Other files export pure functions.
 
-No classes. No abstractions beyond plain functions and types. Keep it flat.
+No classes. Plain functions and types. Keep it flat.
 
 ## Tests
 
-**Automated** (`/tmp/review-e2e/`):
-- `harness.mjs` — shared helpers (repo setup, session creation, assertions)
-- `test-e2e.mjs` — behavioral scenarios using the harness
+**Automated** (`/tmp/review-e2e/`): `harness.mjs` (shared helpers) + `test-e2e.mjs` (scenarios). Run: `node /tmp/review-e2e/test-e2e.mjs`. Assert on observable outcomes (git state, model state, event count, file contents). Never inspect prompt internals.
 
-Run: `node /tmp/review-e2e/test-e2e.mjs`
-
-Tests assert on observable outcomes (git state, model state, agent event count, file contents). Never inspect prompt internals.
-
-**Manual** (need pi TUI): ESC/steer during reviewer or fixer, resume after reload, `/review:cfg` interactive menus. See `docs/E2E_TESTS.md`.
+**Manual** (TUI only): ESC/steer, resume after reload, `/review:cfg` menus. See `docs/E2E_TESTS.md`.
