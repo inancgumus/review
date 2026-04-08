@@ -16,7 +16,8 @@ function createHarness() {
 	const customCalls: Array<{ factory: any; options: any }> = [];
 	const entries: any[] = [{ id: "root", type: "message", message: { role: "user", content: "root" } }];
 	let thinking = "low";
-	let leafId = "leaf-1";
+	let leafId = "root";
+	let seq = 0;
 
 	const pi = {
 		registerCommand(name: string, spec: { handler: (args: string, ctx: any) => Promise<void> | void }) {
@@ -29,10 +30,16 @@ function createHarness() {
 			sentMessages.push(message);
 		},
 		sendUserMessage(content: string) {
-			userMessages.push(content);
+			userMessages.push(String(content));
+		},
+		appendEntry(customType: string, data: any) {
+			seq++;
+			leafId = `custom-${seq}`;
+			entries.push({ id: leafId, type: "custom", customType, data });
 		},
 		async setModel(model: any) {
 			ctx.model = model;
+			return true;
 		},
 		setThinkingLevel(level: string) {
 			thinking = level;
@@ -53,6 +60,10 @@ function createHarness() {
 			},
 		},
 		waitForIdle: async () => {},
+		navigateTree: async (id: string) => {
+			leafId = id;
+			return { cancelled: false };
+		},
 		sessionManager: {
 			getEntries: () => entries,
 			getBranch: () => entries,
@@ -87,6 +98,7 @@ function createHarness() {
 		assert.ok(review, "review command registered");
 		await review(initialRequest, ctx);
 
+		leafId = "review-1";
 		entries.push({
 			id: "review-1",
 			type: "message",
@@ -97,6 +109,7 @@ function createHarness() {
 		agentEnd({}, ctx);
 		await wait();
 
+		leafId = "fix-1";
 		entries.push({
 			id: "fix-1",
 			type: "message",

@@ -5,6 +5,7 @@ interface RecoveredState {
 	round: number;
 	phase: "review" | "fix";
 	lastReviewText: string;
+	reviewLeafId: string | null;
 }
 
 export function reconstructState(ctx: any): RecoveredState | null {
@@ -13,6 +14,7 @@ export function reconstructState(ctx: any): RecoveredState | null {
 	let lastReviewText = "";
 	let lastReviewRound = 0;
 	let focus = "all recent code changes";
+	let reviewLeafId: string | null = null;
 
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const e = entries[i];
@@ -33,6 +35,7 @@ export function reconstructState(ctx: any): RecoveredState | null {
 
 		if (/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/i.test(text)) {
 			lastReviewText = text;
+			reviewLeafId = e.id;
 			lastReviewRound = findReviewRound(entries, i);
 			focus = findFocus(entries, i) || focus;
 			break;
@@ -40,10 +43,10 @@ export function reconstructState(ctx: any): RecoveredState | null {
 	}
 
 	if (lastFixerRound > 0 && lastFixerRound >= lastReviewRound) {
-		return { focus, round: lastFixerRound + 1, phase: "review", lastReviewText: "" };
+		return { focus, round: lastFixerRound + 1, phase: "review", lastReviewText: "", reviewLeafId };
 	}
 	if (lastReviewRound > 0 && lastReviewText) {
-		return { focus, round: lastReviewRound, phase: "fix", lastReviewText };
+		return { focus, round: lastReviewRound, phase: "fix", lastReviewText, reviewLeafId };
 	}
 	return null;
 }

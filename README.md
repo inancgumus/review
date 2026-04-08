@@ -65,7 +65,7 @@ Round 3
 
 ### Two review modes
 
-- **Fresh** (default) — The reviewer starts each round from scratch. It re-reads files from disk, gets full review rules, and sees a summary of prior fixes. Context cost stays constant across rounds.
+- **Fresh** (default) — The reviewer starts each round from scratch from the hidden `/review` start anchor. It re-reads files from disk, gets full review rules, and sees a summary of prior fixes. Prior review rounds do not leak. Context cost stays constant across rounds. Pre-existing session context from before `/review` is preserved; if you want absolute zero-context rounds, start `/review` in a new session.
 - **Incremental** — The reviewer keeps its full context. Round 2+ gets a short re-review prompt. Cheaper, but risks tunnel vision on prior feedback.
 
 Set via `/review:cfg` or the `review` section in `~/.pi/agent/settings.json`.

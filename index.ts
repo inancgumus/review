@@ -44,6 +44,7 @@ function restoreEditorEnv(): void {
 
 export default function (pi: ExtensionAPI) {
 	let state: LoopState = newState();
+	let loopCommandCtx: any | null = null;
 
 	function deferIf(phase: string, fn: () => void): void {
 		setTimeout(() => { if (state.phase === phase) fn(); }, 100);
@@ -53,24 +54,81 @@ export default function (pi: ExtensionAPI) {
 		pi.sendMessage({ customType: "review-log", content: text, display: true }, { triggerTurn: false });
 	}
 
-	function branchToRoot(ctx: any): void {
+	function findReviewAnchor(ctx: any): { id: string; data: any } | null {
 		const entries = ctx.sessionManager.getEntries();
-		if (entries.length > 0) ctx.sessionManager.branch(entries[0].id);
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e.type === "custom" && e.customType === "review-anchor") return { id: e.id, data: e.data };
+		}
+		return null;
+	}
+
+	function rememberReviewAnchor(ctx: any): void {
+		pi.appendEntry("review-anchor", {
+			focus: state.focus,
+			initialRequest: state.initialRequest,
+			contextPaths: state.contextPaths,
+		});
+		state.anchorEntryId = ctx.sessionManager.getLeafId();
+	}
+
+	async function navigateToEntry(targetId: string, ctx: any): Promise<boolean> {
+		if (typeof ctx.navigateTree !== "function") {
+			ctx.ui.notify("Review transition requires command context", "error");
+			await stopLoop(ctx);
+			return false;
+		}
+		const result = await ctx.navigateTree(targetId, { summarize: false });
+		return !result?.cancelled;
+	}
+
+	async function navigateToAnchor(ctx: any): Promise<boolean> {
+		if (!state.anchorEntryId) state.anchorEntryId = findReviewAnchor(ctx)?.id ?? null;
+		if (!state.anchorEntryId) {
+			ctx.ui.notify("No review anchor found", "error");
+			await stopLoop(ctx);
+			return false;
+		}
+		return navigateToEntry(state.anchorEntryId, ctx);
+	}
+
+	async function continueLoop(eventCtx: any, action: { type: "review"; summaryText?: string } | { type: "fix"; reviewText: string }): Promise<void> {
+		const ctx = loopCommandCtx;
+		if (!ctx) {
+			eventCtx.ui.notify("Review loop lost its command context", "error");
+			await stopLoop(eventCtx);
+			return;
+		}
+		await ctx.waitForIdle();
+		if (action.type === "fix") await startFix(action.reviewText, ctx);
+		else await startReview(ctx, action.summaryText);
 	}
 
 	async function setAgent(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
 		const model = findModel(modelStr, ctx);
 		if (!model) { ctx.ui.notify(`Model not found: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
-		await pi.setModel(model);
+		if (!await pi.setModel(model)) { ctx.ui.notify(`No API key for model: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
 		pi.setThinkingLevel(thinking);
 		return true;
 	}
 
 	// ── Transitions ─────────────────────────────────────
 
-	async function startReview(ctx: any): Promise<void> {
+	async function startReview(ctx: any, summaryText?: string): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
-		if (state.round > 1 && state.reviewMode === "fresh") branchToRoot(ctx);
+		if (state.reviewMode === "fresh") {
+			if (!await navigateToAnchor(ctx)) return;
+		} else if (state.round > 1) {
+			if (!state.reviewLeafId) {
+				ctx.ui.notify("No review branch to return to", "error");
+				await stopLoop(ctx);
+				return;
+			}
+			if (!await navigateToEntry(state.reviewLeafId, ctx)) return;
+			if (summaryText) {
+				pi.sendMessage({ customType: "fixer-summary", content: summaryText, display: true }, { triggerTurn: false });
+			}
+		}
 		if (!await setAgent(cfg.reviewerModel, cfg.reviewerThinking, ctx)) return;
 
 		state.phase = "reviewing";
@@ -86,7 +144,7 @@ export default function (pi: ExtensionAPI) {
 	async function startFix(reviewText: string, ctx: any): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
 		state.reviewLeafId = ctx.sessionManager.getLeafId();
-		branchToRoot(ctx);
+		if (!await navigateToAnchor(ctx)) return;
 		if (!await setAgent(cfg.fixerModel, cfg.fixerThinking, ctx)) return;
 
 		state.phase = "fixing";
@@ -95,27 +153,21 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(buildFixPrompt(reviewText, state.contextPaths, state.round));
 	}
 
-	async function onFixerDone(fixerText: string, ctx: any): Promise<void> {
+	async function onFixerDone(fixerText: string, eventCtx: any): Promise<void> {
 		const summary = sanitize(stripVerdict(fixerText));
 		const summaryText = `[Fixer Round ${state.round}] ${summary}`;
 		state.fixerSummaries.push(summaryText);
 		recordFixer(state.round, summaryText);
 		log(`🔧 Fixes applied\n${summary}`);
-
-		if (state.reviewMode === "incremental") {
-			if (!state.reviewLeafId) { ctx.ui.notify("No review branch to return to", "error"); await stopLoop(ctx); return; }
-			ctx.sessionManager.branch(state.reviewLeafId);
-			pi.sendMessage({ customType: "fixer-summary", content: summaryText, display: true }, { triggerTurn: false });
-		}
-		state.reviewLeafId = null;
 		state.round++;
-		await startReview(ctx);
+		await continueLoop(eventCtx, { type: "review", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
 		state.phase = "idle";
 		state.reviewLeafId = null;
+		loopCommandCtx = null;
 		ctx.ui.setStatus("review", "");
 		restoreEditorEnv();
 		if (!wasRunning || !state.originalModelStr) return;
@@ -153,8 +205,8 @@ export default function (pi: ExtensionAPI) {
 			const summary = sanitize(stripVerdict(text));
 			log(`❌ CHANGES REQUESTED\n${summary}`);
 			deferIf("reviewing", () => {
-				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); stopLoop(ctx); return; }
-				startFix(text, ctx);
+				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
+				void continueLoop(ctx, { type: "fix", reviewText: text });
 			});
 			return;
 		}
@@ -163,7 +215,7 @@ export default function (pi: ExtensionAPI) {
 
 	function handleFixerEnd(text: string, ctx: any): void {
 		if (hasFixesComplete(text)) {
-			deferIf("fixing", () => { const t = getLastAssistant(ctx).text; if (t.trim()) onFixerDone(t, ctx); });
+			deferIf("fixing", () => { const t = getLastAssistant(ctx).text; if (t.trim()) void onFixerDone(t, ctx); });
 			return;
 		}
 		deferIf("fixing", () => pi.sendUserMessage("Continue addressing the remaining issues. When all fixes are done, end with FIXES_COMPLETE"));
@@ -191,12 +243,14 @@ export default function (pi: ExtensionAPI) {
 			const cfg = loadConfig(ctx.cwd);
 			const trimmedArgs = (args || "").trim();
 			const { focus, contextPaths } = parseArgs(trimmedArgs, ctx.cwd);
+			loopCommandCtx = ctx;
 			state = newState({
 				round: 1, focus, initialRequest: trimmedArgs ? `/review ${trimmedArgs}` : "/review", contextPaths,
 				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			});
 			log(`📝 Request\n${state.initialRequest}`);
+			rememberReviewAnchor(ctx);
 			blockInteractiveEditors();
 			ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
 			await ctx.waitForIdle();
@@ -210,13 +264,18 @@ export default function (pi: ExtensionAPI) {
 			if (state.phase !== "idle") { ctx.ui.notify("Review loop already running", "warning"); return; }
 			const recovered = reconstructState(ctx);
 			if (!recovered) { ctx.ui.notify("Nothing to resume. Use /review to start.", "info"); return; }
+			const anchor = findReviewAnchor(ctx);
 			const cfg = loadConfig(ctx.cwd);
+			loopCommandCtx = ctx;
 			state = newState({
 				round: recovered.round,
-				focus: recovered.focus,
-				initialRequest: recovered.focus ? `/review ${recovered.focus}` : "/review",
+				focus: anchor?.data?.focus ?? recovered.focus,
+				initialRequest: anchor?.data?.initialRequest ?? (recovered.focus ? `/review ${recovered.focus}` : "/review"),
+				contextPaths: Array.isArray(anchor?.data?.contextPaths) ? anchor.data.contextPaths : [],
 				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
+				reviewLeafId: recovered.reviewLeafId,
+				anchorEntryId: anchor?.id ?? null,
 			});
 			blockInteractiveEditors();
 			ctx.ui.notify(`Resuming round ${recovered.round} (${recovered.phase} phase)`, "info");

@@ -33,6 +33,7 @@ export interface LoopState {
 	originalModelStr: string;
 	originalThinking: string;
 	reviewLeafId: string | null;
+	anchorEntryId: string | null;
 	fixerSummaries: string[];
 	roundResults: RoundResult[];
 }
@@ -49,6 +50,7 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		originalModelStr: "",
 		originalThinking: "xhigh",
 		reviewLeafId: null,
+		anchorEntryId: null,
 		fixerSummaries: [],
 		roundResults: [],
 		...overrides,

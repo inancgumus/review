@@ -42,7 +42,7 @@ Then open pi in `/tmp/review-test`.
 3. When the fixer starts, check:
    - Fixer should NOT reference any of the reviewer's tool calls or file reads
    - Fixer should only see its fix prompt (the review feedback)
-   - Fixer works from a clean tree branch rooted at the session start
+   - Fixer works from a clean tree branch rooted at the hidden `/review` start anchor
 4. **Verify:** The fixer doesn't say "as I mentioned earlier" or reference prior conversation
 
 ## Test 3: Context isolation — reviewer context depends on mode
@@ -86,13 +86,13 @@ Then open pi in `/tmp/review-test`.
 1. Same setup
 2. **Expect tree structure:**
    ```
-   root
+   review-anchor
    ├→ review1_prompt (full rules + @path) → reviewer_tools → VERDICT [dead branch]
    ├→ fix1_prompt → fixer_tools → fixer_done [dead branch]
    └→ review2_prompt (full rules + @path + "Previous rounds" + fixer summary) → ...
    ```
-3. Both reviewer AND fixer branch from root each round
-4. Each reviewer gets a completely fresh context with re-read `@path` files
+3. Both reviewer AND fixer branch from the hidden `/review` start anchor each round
+4. Each reviewer gets a completely fresh review-loop context with re-read `@path` files
 
 ## Test 5: ESC during reviewer + steer
 
@@ -396,7 +396,7 @@ Setup:
    - **Expect:** `@path` file contents re-read from disk and included
    - **Expect:** "Previous rounds" section with accumulated fixer summaries
    - **Expect:** Fixer summary text includes "[Fixer Round N]" prefix
-4. **Expect:** Context usage is constant per round (no accumulation)
+4. **Expect:** Context usage is constant per round relative to the `/review` start anchor (no review-loop accumulation)
 
 ## Test 30: Duplicate extension loading
 
