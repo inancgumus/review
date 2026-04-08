@@ -95,11 +95,11 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function onFixerDone(fixerText: string, ctx: any): Promise<void> {
-		const summary = sanitize(stripVerdict(fixerText)).slice(0, 800);
+		const summary = sanitize(stripVerdict(fixerText));
 		const summaryText = `[Fixer Round ${state.round}] ${summary}`;
 		state.fixerSummaries.push(summaryText);
 		recordFixer(state.round, summaryText);
-		log(`🔧 Fixes applied\n${summary.slice(0, 400)}`);
+		log(`🔧 Fixes applied\n${summary}`);
 
 		if (state.reviewMode === "incremental") {
 			if (!state.reviewLeafId) { ctx.ui.notify("No review branch to return to", "error"); await stopLoop(ctx); return; }
@@ -149,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (verdict === "changes_requested") {
 			recordReview(state.round, "changes_requested", text);
-			const summary = sanitize(stripVerdict(text)).slice(0, 600);
+			const summary = sanitize(stripVerdict(text));
 			log(`❌ CHANGES REQUESTED\n${summary}`);
 			deferIf("reviewing", () => {
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); stopLoop(ctx); return; }
@@ -253,7 +253,7 @@ export default function (pi: ExtensionAPI) {
 			const items = state.roundResults.flatMap(r => {
 				const icon = r.verdict === "approved" ? "✅" : r.verdict === "changes_requested" ? "❌" : "⏳";
 				const lines = [`${icon} Round ${r.round}: ${(r.verdict || "pending").toUpperCase()}`];
-				if (r.fixerSummary) lines.push(`  🔧 ${r.fixerSummary.slice(0, 120)}`);
+				if (r.fixerSummary) lines.push(`  🔧 ${r.fixerSummary}`);
 				return lines;
 			});
 
@@ -267,8 +267,8 @@ export default function (pi: ExtensionAPI) {
 			await ctx.ui.select(`Round ${result.round} Detail`, [
 				`── Round ${result.round} ──`,
 				`Verdict: ${(result.verdict || "pending").toUpperCase()}`,
-				"", result.reviewText.slice(0, 2000),
-				...(result.fixerSummary ? ["", "── Fixer ──", result.fixerSummary] : []),
+				"", ...result.reviewText.split("\n"),
+				...(result.fixerSummary ? ["", "── Fixer ──", ...result.fixerSummary.split("\n")] : []),
 			]);
 		},
 	});
