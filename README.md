@@ -58,7 +58,7 @@ Round 3
 | `/review:stop` | Stop the loop and restore your original model. |
 | `/review:resume` | Resume after a pi restart or reload. |
 | `/review:rounds <n>` | Change max rounds mid-loop. |
-| `/review:log` | Browse past verdicts and fixer summaries without disturbing the loop. |
+| `/review:log` | Open a modal log viewer with reviewer + fixer output, markdown rendering, and round navigation. |
 | `/review:cfg` | Change reviewer model, fixer model, thinking level, max rounds, and review mode. |
 
 ## Features
@@ -92,6 +92,10 @@ The fixer follows strict git rules based on your repo state:
 ### Interactive editor protection
 
 The extension sets `GIT_EDITOR` and `EDITOR` to a blocker script during the loop. If the fixer runs `git commit` without `-m` or bare `git rebase -i`, the command fails with an error telling it to use non-interactive flags. Editors like `vim` never open. Sessions never get stuck.
+
+### Log viewer
+
+`/review:log` opens a floating modal. Left/right switches rounds. Up/down scrolls the current round. The original `/review ...` request, reviewer output, and fixer output render together as markdown.
 
 ### Steering
 

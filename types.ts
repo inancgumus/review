@@ -26,6 +26,7 @@ export interface LoopState {
 	phase: Phase;
 	round: number;
 	focus: string;
+	initialRequest: string;
 	contextPaths: string[];
 	maxRounds: number;
 	reviewMode: ReviewMode;
@@ -41,6 +42,7 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		phase: "idle",
 		round: 0,
 		focus: "",
+		initialRequest: "",
 		contextPaths: [],
 		maxRounds: 10,
 		reviewMode: "fresh",

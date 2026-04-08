@@ -18,6 +18,7 @@ import { buildReviewPrompt, buildFixPrompt } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
+import { showReviewLog } from "./log-view.js";
 
 // Block interactive editors during agent turns.
 // GIT_EDITOR/EDITOR/VISUAL → fail with actionable message so the agent retries correctly.
@@ -188,12 +189,14 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			if (state.phase !== "idle") { ctx.ui.notify("Review loop already running — /review:stop to cancel", "warning"); return; }
 			const cfg = loadConfig(ctx.cwd);
-			const { focus, contextPaths } = parseArgs(args || "", ctx.cwd);
+			const trimmedArgs = (args || "").trim();
+			const { focus, contextPaths } = parseArgs(trimmedArgs, ctx.cwd);
 			state = newState({
-				round: 1, focus, contextPaths,
+				round: 1, focus, initialRequest: trimmedArgs ? `/review ${trimmedArgs}` : "/review", contextPaths,
 				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			});
+			log(`📝 Request\n${state.initialRequest}`);
 			blockInteractiveEditors();
 			ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
 			await ctx.waitForIdle();
@@ -209,7 +212,9 @@ export default function (pi: ExtensionAPI) {
 			if (!recovered) { ctx.ui.notify("Nothing to resume. Use /review to start.", "info"); return; }
 			const cfg = loadConfig(ctx.cwd);
 			state = newState({
-				round: recovered.round, focus: recovered.focus,
+				round: recovered.round,
+				focus: recovered.focus,
+				initialRequest: recovered.focus ? `/review ${recovered.focus}` : "/review",
 				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			});
@@ -246,30 +251,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("review:log", {
-		description: "Browse review verdicts and fixer summaries",
+		description: "Browse reviewer + fixer logs in a modal viewer",
 		handler: async (_args, ctx) => {
 			if (state.roundResults.length === 0) { ctx.ui.notify("No review rounds recorded yet.", "info"); return; }
-
-			const items = state.roundResults.flatMap(r => {
-				const icon = r.verdict === "approved" ? "✅" : r.verdict === "changes_requested" ? "❌" : "⏳";
-				const lines = [`${icon} Round ${r.round}: ${(r.verdict || "pending").toUpperCase()}`];
-				if (r.fixerSummary) lines.push(`  🔧 ${r.fixerSummary}`);
-				return lines;
-			});
-
-			const picked = await ctx.ui.select("Review Log", items);
-			if (!picked) return;
-			const m = picked.match(/Round (\d+)/);
-			if (!m) return;
-			const result = state.roundResults.find(r => r.round === parseInt(m[1], 10));
-			if (!result) return;
-
-			await ctx.ui.select(`Round ${result.round} Detail`, [
-				`── Round ${result.round} ──`,
-				`Verdict: ${(result.verdict || "pending").toUpperCase()}`,
-				"", ...result.reviewText.split("\n"),
-				...(result.fixerSummary ? ["", "── Fixer ──", ...result.fixerSummary.split("\n")] : []),
-			]);
+			await showReviewLog(state.initialRequest, state.roundResults, ctx);
 		},
 	});
 

@@ -368,9 +368,10 @@ Setup:
 
 1. Run `/review fix the divide by zero bug`
 2. **Expect:** `review-log` custom message at each transition:
-   - `[Round 1] Reviewer: openai/gpt-4.1-mini · Fixer: anthropic/claude-haiku-4-5`
-   - `[Round 1] Switching to fixer: anthropic/claude-haiku-4-5`
-   - `[Round 2] Reviewer: openai/gpt-4.1-mini · Fixer: anthropic/claude-haiku-4-5`
+   - `📝 Request` followed by the original `/review ...` command
+   - `[Round 1] Reviewer: openai/gpt-4.1-mini · mode: fresh`
+   - `[Round 1] Fixer: anthropic/claude-haiku-4-5`
+   - `[Round 2] Reviewer: openai/gpt-4.1-mini · mode: fresh`
    - `Review loop ended. Restored model: openai/gpt-4.1-nano · thinking: low`
 3. **Expect:** Messages visible in TUI (`display: true`)
 4. **Note:** `review-log` custom messages do NOT fire as SDK subscription events — TUI only
@@ -445,6 +446,19 @@ Verifies that `@path` file content is re-read from disk on every prompt, not cac
 4. **Expect:** Round 2 prompt contains "fixer addressed your previous feedback"
 
 **Automated test:** `/tmp/review-mode-test/test-modes.mjs` — Test 3 (2/2 assertions pass).
+
+## Test 35: /review:log modal viewer
+
+1. Run `/review fix the divide by zero bug`
+2. Let at least one full round finish (`CHANGES_REQUESTED` → fixer summary)
+3. Run `/review:log`
+4. **Expect:** A floating modal opens (not a select menu)
+5. **Expect:** The original `/review ...` request is visible in the detail pane
+6. **Expect:** Reviewer output and fixer output are both visible in the detail pane
+7. **Expect:** Markdown headings render as headings, not raw `##` / `###`
+8. Press **← / →** → **Expect:** Round changes without closing the modal
+9. Press **↑ / ↓** → **Expect:** Current round detail scrolls
+10. Press **Esc** → **Expect:** Modal closes
 
 ## Manual-only tests (need interactive TUI)
 
