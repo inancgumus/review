@@ -5,12 +5,21 @@ const MIN_WIDTH = 60;
 const MAX_WIDTH = 120;
 const LIST_WIDTH = 28;
 
+type ListEntry =
+	| { type: "request"; text: string }
+	| { type: "reviewer"; round: number; result: RoundResult }
+	| { type: "fixer"; round: number; result: RoundResult };
+
+interface SearchHit { entryIdx: number; lineIdx: number; }
+
+type Panel = "list" | "detail";
+
 function verdictLabel(result: RoundResult): string {
 	return (result.verdict ?? "pending").toUpperCase();
 }
 
 function verdictIcon(result: RoundResult): string {
-	return result.verdict === "approved" ? "✅" : result.verdict === "changes_requested" ? "❌" : "⏳";
+	return result.verdict === "approved" ? "\u2705" : result.verdict === "changes_requested" ? "\u274c" : "\u23f3";
 }
 
 function preview(text: string): string {
@@ -25,7 +34,12 @@ function preview(text: string): string {
 	return "";
 }
 
-function pad(text: string, width: number, truncateToWidth: (text: string, width: number, ellipsis?: string, preserveAnsi?: boolean) => string, visibleWidth: (text: string) => number): string {
+function pad(
+	text: string,
+	width: number,
+	truncateToWidth: (text: string, width: number, ellipsis?: string, preserveAnsi?: boolean) => string,
+	visibleWidth: (text: string) => number,
+): string {
 	const clipped = truncateToWidth(text, width, "...", true);
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
@@ -40,56 +54,119 @@ function cleanFixerText(text: string): string {
 	return text.replace(/^\[Fixer Round \d+\]\s*/i, "").trim();
 }
 
-function buildRoundMarkdown(initialRequest: string, result: RoundResult): string {
-	const parts = [
-		`# Round ${result.round}`,
-		"",
-		"## User request",
-		"",
-		initialRequest ? `\`${initialRequest}\`` : "_No user request recorded._",
-		"",
-		`**Verdict:** ${verdictLabel(result)}`,
-		"",
-		"## Reviewer",
-		"",
-		cleanReviewerText(result.reviewText) || "_No reviewer output recorded._",
-	];
-
-	if (result.fixerSummary.trim()) {
-		parts.push("", "## Fixer", "", cleanFixerText(result.fixerSummary) || "_No fixer output recorded._");
+function buildEntries(initialRequest: string, roundResults: RoundResult[]): ListEntry[] {
+	var entries: ListEntry[] = [{ type: "request", text: initialRequest }];
+	for (var i = 0; i < roundResults.length; i++) {
+		var result = roundResults[i];
+		entries.push({ type: "reviewer", round: result.round, result: result });
+		if (result.fixerSummary.trim()) {
+			entries.push({ type: "fixer", round: result.round, result: result });
+		}
 	}
+	return entries;
+}
 
-	return parts.join("\n");
+function buildEntryMarkdown(entry: ListEntry): string {
+	if (entry.type === "request") {
+		return "# User request\n\n" + (entry.text ? ("`" + entry.text + "`") : "_No user request recorded._");
+	}
+	if (entry.type === "reviewer") {
+		return "# Round " + entry.round + ": Reviewer\n\n**Verdict:** " + verdictLabel(entry.result) + "\n\n" +
+			(cleanReviewerText(entry.result.reviewText) || "_No reviewer output recorded._");
+	}
+	return "# Round " + entry.round + ": Fixer\n\n" +
+		(cleanFixerText(entry.result.fixerSummary) || "_No fixer output recorded._");
+}
+
+function entryTitle(entry: ListEntry): string {
+	if (entry.type === "request") return "\ud83d\udcdd Request";
+	if (entry.type === "reviewer") return verdictIcon(entry.result) + " Round " + entry.round + ": Reviewer";
+	return "\ud83d\udd27 Round " + entry.round + ": Fixer";
+}
+
+function entrySubtitle(entry: ListEntry): string {
+	if (entry.type === "request") return preview(entry.text) || "No request";
+	if (entry.type === "reviewer") return preview(cleanReviewerText(entry.result.reviewText)) || "No details yet";
+	return preview(cleanFixerText(entry.result.fixerSummary)) || "No details yet";
 }
 
 function buildListLines(
-	rounds: RoundResult[],
+	entries: ListEntry[],
 	selected: number,
 	theme: any,
 	width: number,
 	truncateToWidth: (text: string, width: number, ellipsis?: string, preserveAnsi?: boolean) => string,
 	visibleWidth: (text: string) => number,
 ): string[] {
-	const lines = [theme.fg("accent", theme.bold("Rounds")), ""];
-
-	for (let i = 0; i < rounds.length; i++) {
-		const round = rounds[i];
-		const active = i === selected;
-		const prefix = active ? theme.fg("accent", "▶") : " ";
-		const title = `${prefix} ${verdictIcon(round)} Round ${round.round}`;
-		const verdict = active ? theme.fg("accent", verdictLabel(round)) : theme.fg("muted", verdictLabel(round));
-		const reviewPreview = preview(cleanReviewerText(round.reviewText));
-		const fixerPreview = preview(cleanFixerText(round.fixerSummary));
-		const summary = reviewPreview || fixerPreview || "No details yet";
-		lines.push(pad(`${title} ${verdict}`, width, truncateToWidth, visibleWidth));
-		lines.push(pad(theme.fg(active ? "text" : "dim", `  ${summary}`), width, truncateToWidth, visibleWidth));
-		if (fixerPreview) {
-			lines.push(pad(theme.fg("dim", `  Fixer: ${fixerPreview}`), width, truncateToWidth, visibleWidth));
-		}
+	var lines = [theme.fg("accent", theme.bold("Log")), ""];
+	for (var i = 0; i < entries.length; i++) {
+		var entry = entries[i];
+		var active = i === selected;
+		var prefix = active ? theme.fg("accent", "\u25b6") : " ";
+		var title = prefix + " " + entryTitle(entry);
+		var subtitle = entrySubtitle(entry);
+		lines.push(pad(title, width, truncateToWidth, visibleWidth));
+		lines.push(pad(theme.fg(active ? "text" : "dim", "  " + subtitle), width, truncateToWidth, visibleWidth));
 		lines.push("");
 	}
-
 	return lines;
+}
+
+function headerTitle(entry: ListEntry): string {
+	if (entry.type === "request") return " \ud83d\udcdd Request ";
+	if (entry.type === "reviewer") {
+		return " " + verdictIcon(entry.result) + " Round " + entry.round + ": Reviewer \u00b7 " + verdictLabel(entry.result) + " ";
+	}
+	return " \ud83d\udd27 Round " + entry.round + ": Fixer ";
+}
+
+function stripAnsi(text: string): string {
+	return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+// Highlight search matches in a rendered line.
+// activeOccurrence: which match on this line is the active hit (0-based), -1 if none.
+// Active match = white on red, others = black on yellow.
+function highlightLine(line: string, query: string, activeOccurrence: number): string {
+	if (!query) return line;
+	var hlNormal = "\x1b[0m\x1b[30;43m";
+	var hlActive = "\x1b[0m\x1b[97;41m";
+	var matchCount = 0;
+	var qLower = query.toLowerCase();
+	var parts: string[] = [];
+	var last = 0;
+	var ansiRe = /\x1b\[[0-9;]*m/g;
+	var m: RegExpExecArray | null;
+	while ((m = ansiRe.exec(line)) !== null) {
+		if (m.index > last) parts.push(line.slice(last, m.index));
+		parts.push(m[0]);
+		last = m.index + m[0].length;
+	}
+	if (last < line.length) parts.push(line.slice(last));
+
+	var result: string[] = [];
+	for (var pi2 = 0; pi2 < parts.length; pi2++) {
+		var part = parts[pi2];
+		if (part.startsWith("\x1b[")) {
+			result.push(part);
+			continue;
+		}
+		var idx = 0;
+		var lower = part.toLowerCase();
+		while (idx < part.length) {
+			var pos = lower.indexOf(qLower, idx);
+			if (pos === -1) {
+				result.push(part.slice(idx));
+				break;
+			}
+			if (pos > idx) result.push(part.slice(idx, pos));
+			var style = (matchCount === activeOccurrence) ? hlActive : hlNormal;
+			result.push(style + part.slice(pos, pos + query.length) + "\x1b[0m");
+			matchCount++;
+			idx = pos + query.length;
+		}
+	}
+	return result.join("");
 }
 
 export async function showReviewLog(initialRequest: string, roundResults: RoundResult[], ctx: any): Promise<void> {
@@ -98,19 +175,30 @@ export async function showReviewLog(initialRequest: string, roundResults: RoundR
 		return;
 	}
 
-	const [{ Markdown, matchesKey, truncateToWidth, visibleWidth }, { getMarkdownTheme }] = await Promise.all([
-		loadTui(),
-		loadPiAgent(),
-	]);
-	const mdTheme = getMarkdownTheme();
+	var loaded = await Promise.all([loadTui(), loadPiAgent()]);
+	var Markdown = loaded[0].Markdown;
+	var matchesKey = loaded[0].matchesKey;
+	var truncateToWidth = loaded[0].truncateToWidth;
+	var visibleWidth = loaded[0].visibleWidth;
+	var mdTheme = loaded[1].getMarkdownTheme();
 
-	await ctx.ui.custom<void>((tui: any, theme: any, _kb: any, done: () => void) => {
-		let selected = Math.max(0, roundResults.length - 1);
-		let scroll = 0;
-		let cachedRound = -1;
-		let cachedWidth = -1;
-		let cachedLines: string[] = [];
-		let lastRenderWidth = MIN_WIDTH;
+	await ctx.ui.custom(function (tui: any, theme: any, _kb: any, done: () => void) {
+		var entries = buildEntries(initialRequest, roundResults);
+		var selected = 0;
+		var scroll = 0;
+		var focus: Panel = "list";
+		var cachedIdx = -1;
+		var cachedWidth = -1;
+		var cachedLines: string[] = [];
+		var lastRenderWidth = MIN_WIDTH;
+
+		var searchMode = false;
+		var searchQuery = "";
+		var activeHighlight = "";
+		var searchHits: SearchHit[] = [];
+		var searchHitIdx = -1;
+
+		var entryLinesCache = new Map();
 
 		function bodyHeight(): number {
 			return Math.max(10, Math.floor(tui.terminal.rows * 0.72) - 5);
@@ -124,18 +212,28 @@ export async function showReviewLog(initialRequest: string, roundResults: RoundR
 			return Math.max(24, innerWidth(width) - LIST_WIDTH - 3);
 		}
 
+		function renderEntryLines(entryIdx: number, width: number): string[] {
+			var w = detailWidth(width);
+			var key = entryIdx + ":" + w;
+			var cached = entryLinesCache.get(key);
+			if (cached) return cached;
+			var md = new Markdown(buildEntryMarkdown(entries[entryIdx]!), 0, 0, mdTheme);
+			var lines = md.render(w);
+			entryLinesCache.set(key, lines);
+			return lines;
+		}
+
 		function detailLines(width: number): string[] {
-			const w = detailWidth(width);
-			if (cachedRound === selected && cachedWidth === w) return cachedLines;
-			const markdown = new Markdown(buildRoundMarkdown(initialRequest, roundResults[selected]!), 0, 0, mdTheme);
-			cachedRound = selected;
+			var w = detailWidth(width);
+			if (cachedIdx === selected && cachedWidth === w) return cachedLines;
+			cachedIdx = selected;
 			cachedWidth = w;
-			cachedLines = markdown.render(w);
+			cachedLines = renderEntryLines(selected, width);
 			return cachedLines;
 		}
 
 		function clampScroll(width: number): void {
-			const max = Math.max(0, detailLines(width).length - bodyHeight());
+			var max = Math.max(0, detailLines(width).length - bodyHeight());
 			scroll = Math.max(0, Math.min(scroll, max));
 		}
 
@@ -144,12 +242,17 @@ export async function showReviewLog(initialRequest: string, roundResults: RoundR
 			tui.requestRender();
 		}
 
-		function moveRound(delta: number): void {
-			const next = Math.max(0, Math.min(roundResults.length - 1, selected + delta));
-			if (next === selected) return;
-			selected = next;
-			scroll = 0;
+		function selectEntry(idx: number): void {
+			if (idx < 0 || idx >= entries.length) return;
+			if (idx !== selected) {
+				selected = idx;
+				scroll = 0;
+			}
 			repaint();
+		}
+
+		function moveEntry(delta: number): void {
+			selectEntry(Math.max(0, Math.min(entries.length - 1, selected + delta)));
 		}
 
 		function scrollDetail(delta: number): void {
@@ -157,73 +260,247 @@ export async function showReviewLog(initialRequest: string, roundResults: RoundR
 			repaint();
 		}
 
+		function scrollToLine(lineIdx: number): void {
+			scroll = Math.max(0, lineIdx - Math.floor(bodyHeight() / 2));
+			repaint();
+		}
+
+		function runSearch(): void {
+			searchHits = [];
+			searchHitIdx = -1;
+			activeHighlight = searchQuery;
+			if (!searchQuery) { activeHighlight = ""; return; }
+
+			var q = searchQuery.toLowerCase();
+			var w = lastRenderWidth;
+			for (var ei = 0; ei < entries.length; ei++) {
+				var lines = renderEntryLines(ei, w);
+				for (var li = 0; li < lines.length; li++) {
+					var plain = stripAnsi(lines[li]).toLowerCase();
+					var searchIdx = 0;
+					while (true) {
+						var found = plain.indexOf(q, searchIdx);
+						if (found === -1) break;
+						searchHits.push({ entryIdx: ei, lineIdx: li });
+						searchIdx = found + q.length;
+					}
+				}
+			}
+
+			if (searchHits.length === 0) return;
+
+			var best = 0;
+			for (var si = 0; si < searchHits.length; si++) {
+				var h = searchHits[si];
+				if (h.entryIdx > selected || (h.entryIdx === selected && h.lineIdx >= scroll)) {
+					best = si;
+					break;
+				}
+			}
+			searchHitIdx = best;
+			jumpToHit(searchHitIdx);
+		}
+
+		function jumpToHit(idx: number): void {
+			if (idx < 0 || idx >= searchHits.length) return;
+			var hit = searchHits[idx];
+			selected = hit.entryIdx;
+			cachedIdx = -1;
+			cachedWidth = -1;
+			scrollToLine(hit.lineIdx);
+		}
+
+		function searchNext(): void {
+			if (searchHits.length === 0) return;
+			searchHitIdx = (searchHitIdx + 1) % searchHits.length;
+			jumpToHit(searchHitIdx);
+		}
+
+		function searchPrev(): void {
+			if (searchHits.length === 0) return;
+			searchHitIdx = (searchHitIdx - 1 + searchHits.length) % searchHits.length;
+			jumpToHit(searchHitIdx);
+		}
+
+		function clearSearch(): void {
+			searchQuery = "";
+			activeHighlight = "";
+			searchHits = [];
+			searchHitIdx = -1;
+		}
+
+		function helpText(): string {
+			if (searchMode) {
+				return " /" + searchQuery + "_ (Enter confirm, Esc cancel) ";
+			}
+			var focusLabel = focus === "list" ? "[list]" : "[detail]";
+			return " Tab switch " + focusLabel + " \u00b7 j/k nav \u00b7 d/u page \u00b7 g/G top/end \u00b7 /search n/N \u00b7 q/Esc close ";
+		}
+
+		function searchInfo(): string {
+			if (!activeHighlight) return "";
+			if (searchHits.length === 0) return " [no matches]";
+			return " [" + (searchHitIdx + 1) + "/" + searchHits.length + "]";
+		}
+
 		return {
-			render(width: number): string[] {
+			render: function (width: number): string[] {
 				lastRenderWidth = width;
 				clampScroll(width);
 
-				const inner = innerWidth(width);
-				const listWidth = Math.min(LIST_WIDTH, Math.max(20, inner - 27));
-				const detailW = Math.max(24, inner - listWidth - 3);
-				const height = bodyHeight();
-				const current = roundResults[selected]!;
-				const list = buildListLines(roundResults, selected, theme, listWidth, truncateToWidth, visibleWidth);
-				const detail = detailLines(width).slice(scroll, scroll + height);
-				const rows: string[] = [];
-				const border = (text: string) => theme.fg("border", text);
-				const header = ` Review Log · ${roundResults.length} round(s) `;
-				const headerPad = Math.max(0, inner - visibleWidth(header));
-				const title = ` ${verdictIcon(current)} Round ${current.round} · ${verdictLabel(current)} `;
-				const titlePad = Math.max(0, inner - visibleWidth(title));
-				const scrollInfo = `${scroll + 1}-${Math.min(scroll + height, detailLines(width).length)} / ${detailLines(width).length}`;
-				const help = ` ←→ round • ↑↓ scroll • PgUp/PgDn page • Home/End • Esc close `;
+				var inner = innerWidth(width);
+				var listWidth = Math.min(LIST_WIDTH, Math.max(20, inner - 27));
+				var detailW = Math.max(24, inner - listWidth - 3);
+				var height = bodyHeight();
+				var current = entries[selected]!;
+				var list = buildListLines(entries, selected, theme, listWidth, truncateToWidth, visibleWidth);
+				var detail = detailLines(width).slice(scroll, scroll + height);
 
-				rows.push(border("╭") + theme.fg("accent", header) + border("─".repeat(headerPad) + "╮"));
-				rows.push(border("│") + pad(theme.fg("accent", title), inner, truncateToWidth, visibleWidth) + border("│"));
-				rows.push(border("├") + border("─".repeat(listWidth + 1)) + border("┬") + border("─".repeat(detailW + 1)) + border("┤"));
+				if (activeHighlight) {
+					// Find active hit's viewport-relative line and occurrence
+					var activeViewLine = -1;
+					var activeOccurrence = -1;
+					if (searchHitIdx >= 0 && searchHitIdx < searchHits.length) {
+						var hit = searchHits[searchHitIdx];
+						if (hit.entryIdx === selected) {
+							activeViewLine = hit.lineIdx - scroll;
+							// Count how many hits on the same line come before the active one
+							activeOccurrence = 0;
+							for (var hi = 0; hi < searchHitIdx; hi++) {
+								var prev = searchHits[hi];
+								if (prev.entryIdx === hit.entryIdx && prev.lineIdx === hit.lineIdx) {
+									activeOccurrence++;
+								}
+							}
+						}
+					}
+					detail = detail.map(function (line: string, i: number) {
+						var occ = (i === activeViewLine) ? activeOccurrence : -1;
+						return highlightLine(line, activeHighlight, occ);
+					});
+				}
 
-				for (let i = 0; i < height; i++) {
-					const left = list[i] ?? "";
-					const right = detail[i] ?? "";
+				var rows: string[] = [];
+				var border = function (text: string) { return theme.fg("border", text); };
+				var header = " Review Log \u00b7 " + roundResults.length + " round(s) ";
+				var headerPad = Math.max(0, inner - visibleWidth(header));
+				var title = headerTitle(current);
+				var totalLines = detailLines(width).length;
+				var scrollStr = (scroll + 1) + "-" + Math.min(scroll + height, totalLines) + " / " + totalLines + searchInfo();
+				var help = helpText();
+
+				rows.push(border("\u256d") + theme.fg("accent", header) + border("\u2500".repeat(headerPad) + "\u256e"));
+				rows.push(border("\u2502") + pad(theme.fg("accent", title), inner, truncateToWidth, visibleWidth) + border("\u2502"));
+				rows.push(border("\u251c") + border("\u2500".repeat(listWidth + 1)) + border("\u252c") + border("\u2500".repeat(detailW + 1)) + border("\u2524"));
+
+				for (var i = 0; i < height; i++) {
+					var left = list[i] ?? "";
+					var right = detail[i] ?? "";
 					rows.push(
-						border("│") +
+						border("\u2502") +
 						pad(left, listWidth + 1, truncateToWidth, visibleWidth) +
-						border("│") +
+						border("\u2502") +
 						pad(right, detailW + 1, truncateToWidth, visibleWidth) +
-						border("│"),
+						border("\u2502"),
 					);
 				}
 
-				rows.push(border("├") + border("─".repeat(inner)) + border("┤"));
-				rows.push(border("│") + pad(theme.fg("dim", `${help}   ${scrollInfo}`), inner, truncateToWidth, visibleWidth) + border("│"));
-				rows.push(border("╰") + border("─".repeat(inner)) + border("╯"));
+				rows.push(border("\u251c") + border("\u2500".repeat(inner)) + border("\u2524"));
+				rows.push(border("\u2502") + pad(theme.fg("dim", help + "   " + scrollStr), inner, truncateToWidth, visibleWidth) + border("\u2502"));
+				rows.push(border("\u2570") + border("\u2500".repeat(inner)) + border("\u256f"));
 				return rows;
 			},
-			invalidate(): void {
-				cachedRound = -1;
+			invalidate: function (): void {
+				cachedIdx = -1;
 				cachedWidth = -1;
 				cachedLines = [];
+				entryLinesCache.clear();
 			},
-			handleInput(data: string): void {
-				if (matchesKey(data, "escape") || matchesKey(data, "return")) {
+			handleInput: function (data: string): void {
+				// Search input mode
+				if (searchMode) {
+					if (matchesKey(data, "return")) {
+						searchMode = false;
+						runSearch();
+						return void repaint();
+					}
+					if (matchesKey(data, "escape")) {
+						searchMode = false;
+						searchQuery = "";
+						return void repaint();
+					}
+					if (matchesKey(data, "backspace")) {
+						searchQuery = searchQuery.slice(0, -1);
+						return void repaint();
+					}
+					if (data.length === 1 && data >= " ") {
+						searchQuery += data;
+						return void repaint();
+					}
+					return;
+				}
+
+				// Esc: clear search first, close on second press
+				if (matchesKey(data, "escape")) {
+					if (activeHighlight) {
+						clearSearch();
+						return void repaint();
+					}
 					done();
 					return;
 				}
-				if (matchesKey(data, "left")) return void moveRound(-1);
-				if (matchesKey(data, "right")) return void moveRound(1);
-				if (matchesKey(data, "up")) return void scrollDetail(-1);
-				if (matchesKey(data, "down")) return void scrollDetail(1);
-				if (matchesKey(data, "pageup")) return void scrollDetail(-bodyHeight());
-				if (matchesKey(data, "pagedown")) return void scrollDetail(bodyHeight());
-				if (matchesKey(data, "home")) { scroll = 0; return void repaint(); }
-				if (matchesKey(data, "end")) { scroll = Number.MAX_SAFE_INTEGER; return void repaint(); }
+
+				// Close
+				if (matchesKey(data, "return") || data === "q") {
+					done();
+					return;
+				}
+
+				// Tab toggles focus between list and detail
+				if (data === "\t") {
+					focus = focus === "list" ? "detail" : "list";
+					return void repaint();
+				}
+
+				// j/k and arrows: context-dependent on focus
+				if (focus === "list") {
+					if (matchesKey(data, "down") || data === "j") return void moveEntry(1);
+					if (matchesKey(data, "up") || data === "k") return void moveEntry(-1);
+				} else {
+					if (matchesKey(data, "down") || data === "j") return void scrollDetail(1);
+					if (matchesKey(data, "up") || data === "k") return void scrollDetail(-1);
+				}
+
+				// Half-page: Ctrl+d/Ctrl+u and PgUp/PgDn (always scroll detail)
+				var half = Math.max(1, Math.floor(bodyHeight() / 2));
+				if (matchesKey(data, "pagedown") || data === "\x04") return void scrollDetail(half);
+				if (matchesKey(data, "pageup") || data === "\x15") return void scrollDetail(-half);
+
+				// Top/bottom: g/G and Home/End
+				if (focus === "list") {
+					if (matchesKey(data, "home") || data === "g") return void selectEntry(0);
+					if (matchesKey(data, "end") || data === "G") return void selectEntry(entries.length - 1);
+				} else {
+					if (matchesKey(data, "home") || data === "g") { scroll = 0; return void repaint(); }
+					if (matchesKey(data, "end") || data === "G") { scroll = Number.MAX_SAFE_INTEGER; return void repaint(); }
+				}
+
+				// Search
+				if (data === "/") {
+					searchMode = true;
+					searchQuery = "";
+					return void repaint();
+				}
+				if (data === "n") return void searchNext();
+				if (data === "N") return void searchPrev();
 			},
 		};
 	}, {
 		overlay: true,
 		overlayOptions: {
 			anchor: "center",
-			width: "90%",
+			width: MAX_WIDTH,
+			minWidth: MIN_WIDTH,
 			maxHeight: "80%",
 			margin: 1,
 		},
