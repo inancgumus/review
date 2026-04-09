@@ -58,7 +58,8 @@ Round 3
 | `/review:stop` | Stop the loop and restore your original model. |
 | `/review:resume` | Resume after a pi restart or reload. |
 | `/review:rounds <n>` | Change max rounds mid-loop. |
-| `/review:log` | Open a modal log viewer with reviewer + fixer output, markdown rendering, and round navigation. |
+| `/review:log` | Open the log viewer — split entries, vim keys, search, two-panel layout. |
+| `/review:debug` | Simulate a 3-round review loop and open the log viewer. Useful for testing the UI. |
 | `/review:cfg` | Change reviewer model, fixer model, thinking level, max rounds, and review mode. |
 
 ## Features
@@ -95,7 +96,31 @@ The extension sets `GIT_EDITOR` and `EDITOR` to a blocker script during the loop
 
 ### Log viewer
 
-`/review:log` opens a floating modal. Left/right switches rounds. Up/down scrolls the current round. The original `/review ...` request, reviewer output, and fixer output render together as markdown.
+`/review:log` opens a floating modal with a two-panel layout: a list on the left, detail on the right.
+
+Each round is split into separate entries — the original request, reviewer output, and fixer output — instead of one blob per round. The detail panel renders full markdown.
+
+#### Two-panel focus
+
+Press **Tab** to switch focus between the list and detail panels. When the list is focused, `j`/`k` move between entries. When the detail is focused, `j`/`k` scroll the content.
+
+#### Vim keybindings
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Navigate entries (list) or scroll (detail) |
+| `g` / `G` | Jump to first / last entry or top / bottom of detail |
+| `d` / `u` | Half-page down / up (always scrolls detail) |
+| `PgDn` / `PgUp` | Half-page down / up |
+| `Home` / `End` | Same as `g` / `G` |
+| `Tab` | Toggle focus between list and detail |
+| `/` | Start search |
+| `n` / `N` | Next / previous search match |
+| `q` / `Esc` | Close (Esc clears search first, then closes) |
+
+#### Search
+
+Press `/` to enter search mode. Type your query and press **Enter** to confirm or **Esc** to cancel. Matches are highlighted across all entries — yellow for normal matches, white-on-red for the active match. `n` jumps to the next match, `N` to the previous. Jumping to a match in a different entry auto-selects it. Press **Esc** to clear the highlight before closing.
 
 ### Steering
 
