@@ -1,20 +1,21 @@
 /**
  * Review Extension — automated review loop between a reviewer and fixer model.
  *
- * /review [focus] [@path ...]  — Start review loop
- * /review:resume               — Resume from session state
- * /review:rounds <n>           — Change max rounds
- * /review:stop                 — Stop the loop
- * /review:log                  — Browse verdicts and fixer summaries
- * /review:cfg                  — Settings UI
+ * /review [focus] [@path ...]       — Start review loop
+ * /review:exec [focus] [@path ...]  — Start exec loop (plan orchestrator → implementer)
+ * /review:resume                    — Resume from session state
+ * /review:rounds <n>                — Change max rounds
+ * /review:stop                      — Stop the loop
+ * /review:log                       — Browse verdicts and fixer summaries
+ * /review:cfg                       — Settings UI
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopState, ReviewMode } from "./types.js";
+import type { LoopMode, LoopState, ReviewMode } from "./types.js";
 import { newState } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
 import { parseArgs } from "./context.js";
-import { buildReviewPrompt, buildFixPrompt } from "./prompts.js";
+import { promptSets } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
@@ -135,7 +136,8 @@ export default function (pi: ExtensionAPI) {
 		state.reviewLeafId = null;
 		ctx.ui.setStatus("review", `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.reviewerModel} reviewing`);
 		log(`[Round ${state.round}] Reviewer: ${cfg.reviewerModel} · mode: ${state.reviewMode}`);
-		pi.sendUserMessage(buildReviewPrompt({
+		const prompts = promptSets[state.mode];
+		pi.sendUserMessage(prompts.buildReviewPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
 			contextPaths: state.contextPaths, fixerSummaries: state.fixerSummaries,
 		}));
@@ -150,7 +152,8 @@ export default function (pi: ExtensionAPI) {
 		state.phase = "fixing";
 		ctx.ui.setStatus("review", `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.fixerModel} fixing`);
 		log(`[Round ${state.round}] Fixer: ${cfg.fixerModel}`);
-		pi.sendUserMessage(buildFixPrompt(reviewText, state.contextPaths, state.round));
+		const prompts = promptSets[state.mode];
+		pi.sendUserMessage(prompts.buildFixPrompt(reviewText, state.contextPaths, state.round));
 	}
 
 	async function onFixerDone(fixerText: string, eventCtx: any): Promise<void> {
@@ -184,11 +187,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", (_event, ctx) => {
 		if (state.phase === "idle") return;
 		const { text, stopReason } = getLastAssistant(ctx);
-		if (!text.trim()) return;
 		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") return;
 
-		if (state.phase === "reviewing") handleReviewerEnd(text, ctx);
-		else if (state.phase === "fixing") handleFixerEnd(text, ctx);
+		if (state.phase === "reviewing") {
+			if (!text.trim()) return;
+			handleReviewerEnd(text, ctx);
+		} else if (state.phase === "fixing") {
+			handleFixerEnd(text, ctx);
+		}
 	});
 
 	function handleReviewerEnd(text: string, ctx: any): void {
@@ -215,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 
 	function handleFixerEnd(text: string, ctx: any): void {
 		if (hasFixesComplete(text)) {
-			deferIf("fixing", () => { const t = getLastAssistant(ctx).text; if (t.trim()) void onFixerDone(t, ctx); });
+			deferIf("fixing", () => void onFixerDone(text, ctx));
 			return;
 		}
 		deferIf("fixing", () => pi.sendUserMessage("Continue addressing the remaining issues. When all fixes are done, end with FIXES_COMPLETE"));
@@ -236,26 +242,33 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Commands ────────────────────────────────────────
 
+	async function startLoop(mode: LoopMode, args: string, ctx: any): Promise<void> {
+		if (state.phase !== "idle") { ctx.ui.notify("Review loop already running — /review:stop to cancel", "warning"); return; }
+		const cfg = loadConfig(ctx.cwd);
+		const trimmedArgs = (args || "").trim();
+		const { focus, contextPaths } = parseArgs(trimmedArgs, ctx.cwd);
+		loopCommandCtx = ctx;
+		state = newState({
+			mode, round: 1, focus, initialRequest: trimmedArgs || "(no focus specified)", contextPaths,
+			maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
+			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
+		});
+		log(`📝 Request\n${state.initialRequest}`);
+		rememberReviewAnchor(ctx);
+		blockInteractiveEditors();
+		ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
+		await ctx.waitForIdle();
+		await startReview(ctx);
+	}
+
 	pi.registerCommand("review", {
 		description: "Start review loop. Usage: /review [focus] [@path ...]",
-		handler: async (args, ctx) => {
-			if (state.phase !== "idle") { ctx.ui.notify("Review loop already running — /review:stop to cancel", "warning"); return; }
-			const cfg = loadConfig(ctx.cwd);
-			const trimmedArgs = (args || "").trim();
-			const { focus, contextPaths } = parseArgs(trimmedArgs, ctx.cwd);
-			loopCommandCtx = ctx;
-			state = newState({
-				round: 1, focus, initialRequest: trimmedArgs || "(no focus specified)", contextPaths,
-				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
-				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
-			});
-			log(`📝 Request\n${state.initialRequest}`);
-			rememberReviewAnchor(ctx);
-			blockInteractiveEditors();
-			ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
-			await ctx.waitForIdle();
-			await startReview(ctx);
-		},
+		handler: (args, ctx) => startLoop("review", args, ctx),
+	});
+
+	pi.registerCommand("review:exec", {
+		description: "Start exec loop (orchestrator → implementer). Usage: /review:exec [focus] [@path ...]",
+		handler: (args, ctx) => startLoop("exec", args, ctx),
 	});
 
 	pi.registerCommand("review:resume", {

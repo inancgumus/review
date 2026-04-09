@@ -1,14 +1,19 @@
 # review
 
-A [pi](https://github.com/mariozechner/pi-coding-agent) extension that loops two AI models: one reviews your code, another fixes the issues, and the reviewer checks the fixes. The loop runs until the reviewer approves.
+A [pi](https://github.com/mariozechner/pi-coding-agent) extension that loops two AI models in two modes:
 
-You see every file read, edit, and verdict in your pi session. Press ESC to pause either agent and steer it.
+- **Review mode** — One reviews your code, another fixes the issues, the reviewer checks the fixes.
+- **Exec mode** — An orchestrator drip-feeds a plan to an implementer, one step at a time.
+
+The loop runs until the reviewer/orchestrator approves. You see every file read, edit, and verdict in your pi session. Press ESC to pause either agent and steer it.
 
 ## Why
 
-A single model reviews code but never checks if its suggestions were applied correctly. The fixer changes code but has no judge. This extension puts a reviewer and fixer in a loop. The reviewer verifies every fix, catches regressions, and approves only when the code passes.
+A single model reviews code but never checks if its suggestions were applied correctly. The fixer changes code but has no judge. This extension puts two models in a loop — one judges, one acts — and the loop repeats until the judge approves.
 
 ## Quick start
+
+### Review mode
 
 ```
 /review fix the authentication bug in cmd/login.go
@@ -16,35 +21,43 @@ A single model reviews code but never checks if its suggestions were applied cor
 
 The reviewer examines your code, lists blocking issues and nitpicks, then gives a verdict. On `CHANGES_REQUESTED`, the fixer addresses each issue. The reviewer re-examines. The loop repeats until `APPROVED` or max rounds.
 
+### Exec mode
+
+```
+/review:exec implement the auth module @docs/plan.md @internal/auth/
+```
+
+The orchestrator reads the plan and codebase, then tells the implementer what to build — one step at a time. After each step, the orchestrator verifies and either assigns the next step or asks for a redo. The loop continues until all steps are done.
+
 ```
 Round 1
 ┌──────────────────────┐       ┌──────────────────────┐
-│ REVIEWER             │       │ FIXER                │
+│ REVIEWER/ORCHESTRATOR│       │ FIXER/IMPLEMENTER    │
 │                      │       │                      │
-│ reads files          │       │ reads review feedback│
-│ runs git log/grep    │       │ edits code           │
-│ finds 3 blocking     │       │ runs tests           │
-│ finds 1 nitpick      │       │ git commit --amend   │
+│ reads files          │       │ reads instructions   │
+│ runs commands        │       │ edits code           │
+│ finds issues / picks │       │ runs tests           │
+│ next plan step       │       │ commits work         │
 │                      │       │                      │
 │ CHANGES_REQUESTED ───┼──────>│ FIXES_COMPLETE ──────┼───┐
 └──────────────────────┘       └──────────────────────┘   │
                                                           │
 Round 2                                                   │
 ┌──────────────────────┐                                  │
-│ REVIEWER             │<─────────────────────────────────┘
+│ REVIEWER/ORCHESTRATOR│<─────────────────────────────────┘
 │                      │
 │ re-reads files       │  fresh: clean context + fixer summary
-│ verifies 3 fixes     │  re-reads @path from disk
-│ catches 1 new issue  │
+│ verifies work        │  re-reads @path from disk
 │                      │
-│ CHANGES_REQUESTED ───┼──> fixer runs again...
+│ CHANGES_REQUESTED ───┼──> fixer/implementer runs again...
 └──────────────────────┘
 
-Round 3
+Round N
 ┌──────────────────────┐
-│ REVIEWER             │
+│ REVIEWER/ORCHESTRATOR│
 │                      │
 │ all issues resolved  │
+│ / all steps done     │
 │                      │
 │ APPROVED ────────────┼──> loop ends, original model restored
 └──────────────────────┘
@@ -54,7 +67,8 @@ Round 3
 
 | Command | Purpose |
 |---|---|
-| `/review [focus] [@path ...]` | Start the loop. Focus narrows what to review. `@path` injects file/directory contents. |
+| `/review [focus] [@path ...]` | Start review loop. Focus narrows what to review. `@path` injects file/directory contents. |
+| `/review:exec [focus] [@path ...]` | Start exec loop. Orchestrator drip-feeds plan steps to implementer. Same `@path` syntax. |
 | `/review:stop` | Stop the loop and restore your original model. |
 | `/review:resume` | Resume after a pi restart or reload. |
 | `/review:rounds <n>` | Change max rounds mid-loop. |
@@ -64,10 +78,18 @@ Round 3
 
 ## Features
 
+### Two loop modes
+
+**Review** (`/review`) — Code review loop. The reviewer reads code, lists issues, the fixer addresses them. Suitable for reviewing existing commits or uncommitted changes.
+
+**Exec** (`/review:exec`) — Plan execution loop. The orchestrator reads a plan (passed as `@path` context) and the codebase, then tells the implementer what to build one step at a time. If a step is incomplete, the orchestrator reassigns it. The plan can be any format — the orchestrator LLM reads it and decides what to drip-feed.
+
+Both modes share the same loop machinery, config, review modes, and log viewer.
+
 ### Two review modes
 
-- **Fresh** (default) — The reviewer starts each round from scratch from the hidden `/review` start anchor. It re-reads files from disk, gets full review rules, and sees a summary of prior fixes. Prior review rounds do not leak. Context cost stays constant across rounds. Pre-existing session context from before `/review` is preserved; if you want absolute zero-context rounds, start `/review` in a new session.
-- **Incremental** — The reviewer keeps its full context. Round 2+ gets a short re-review prompt. Cheaper, but risks tunnel vision on prior feedback.
+- **Fresh** (default) — The reviewer/orchestrator starts each round from scratch. It re-reads files from disk, gets full rules, and sees a summary of prior work. Prior rounds do not leak. Context cost stays constant.
+- **Incremental** — The reviewer/orchestrator keeps its full context. Round 2+ gets a short re-check prompt. Cheaper, but risks tunnel vision.
 
 Set via `/review:cfg` or the `review` section in `~/.pi/agent/settings.json`.
 
@@ -77,18 +99,21 @@ Pass files or directories as extra context for both agents:
 
 ```
 /review @docs/api-spec.md @internal/auth/ check the OAuth flow
+/review:exec @docs/plan.md @internal/ implement the data layer
 ```
 
 Files are re-read from disk before each prompt. Edit a file between rounds and the next agent sees your changes.
 
-### Git-aware fixes
+### Git-aware behavior
 
-The fixer follows strict git rules based on your repo state:
+**Review mode** — The fixer follows strict git rules:
 
 - **Uncommitted changes** — Leaves changes uncommitted. No new commits.
 - **Single commit** — Amends with `--no-edit`.
 - **Multiple commits** — Creates `--fixup` commits per SHA, then runs `git rebase -i --autosquash`.
 - **Split requests** — Uses interactive rebase with `edit` to split commits.
+
+**Exec mode** — The implementer creates regular commits with descriptive messages. One commit per step unless told otherwise.
 
 ### Interactive editor protection
 

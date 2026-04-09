@@ -1,124 +1,17 @@
-import { expandContextPaths } from "./context.js";
-import { sanitize } from "./session.js";
-import type { ReviewMode } from "./types.js";
+import type { LoopMode, PromptSet, ReviewPromptParams } from "./types.js";
+import { reviewPrompts } from "./prompts-review.js";
+import { execPrompts } from "./prompts-exec.js";
 
-interface ReviewPromptParams {
-	focus: string;
-	round: number;
-	reviewMode: ReviewMode;
-	contextPaths: string[];
-	fixerSummaries: string[];
-}
+export const promptSets: Record<LoopMode, PromptSet> = {
+	review: reviewPrompts,
+	exec: execPrompts,
+};
 
+// Backward-compat exports (used by index.ts for the default review mode)
 export function buildReviewPrompt(p: ReviewPromptParams): string {
-	if (p.round > 1 && p.reviewMode === "incremental") return incrementalReviewPrompt(p.round);
-	return fullReviewPrompt(p);
-}
-
-function incrementalReviewPrompt(round: number): string {
-	return [
-		`Re-review round ${round}. The fixer addressed your previous feedback (see the summary above).`,
-		"Verify the fixes are correct by reading the changed files and running git commands.",
-		"If the author disagreed with a point and explained why, accept it unless it's objectively wrong.",
-		"Also check for any new issues introduced by the fixes.",
-		"",
-		"End with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
-	].join("\n");
-}
-
-function fullReviewPrompt(p: ReviewPromptParams): string {
-	const parts = [
-		`You are a code reviewer. Review the code changes in this repository.`,
-		`Focus: ${p.focus}`,
-		"",
-		"Review the code by reading files and running git commands.",
-		"Before giving a verdict, inspect all relevant recent commits and changed files for the requested scope.",
-		"Do NOT stop after the first issue — keep checking until you are confident there are no other blocking issues in scope.",
-		"If the request spans multiple commits, identify every commit that needs fixing, not just the latest one.",
-		"RULES:",
-		"- You are a REVIEWER. Do NOT modify, edit, or write any files.",
-		"- Only use read and bash. Run git/grep/find/ls via bash.",
-		"- Review only the requested target. Ignore unrelated files unless directly relevant.",
-		"",
-		"For each issue you find:",
-		"1. **Commit** — the short SHA that introduced it (run `git log --oneline` to find it)",
-		"2. **File and line** — exact location",
-		"3. **What's wrong** — be specific, not vague",
-		"4. **How to fix it** — concrete suggestion the author can act on immediately",
-		"",
-		"Separate blocking issues (must fix) from nitpicks (optional).",
-		"",
-		"End your review with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
-	];
-
-	const ctx = expandContextPaths(p.contextPaths);
-	if (ctx) parts.push(ctx);
-
-	if (p.round > 1 && p.fixerSummaries.length > 0) {
-		parts.push(
-			"",
-			"## Previous rounds",
-			"Below is the fixer's SELF-REPORTED summary. Do NOT trust it. The fixer may have missed things, introduced new bugs, or only partially fixed issues.",
-			"",
-			...p.fixerSummaries,
-			"",
-			"## YOUR JOB THIS ROUND",
-			"You MUST read the actual source files and run git commands before giving a verdict.",
-			"A review with zero tool calls is a rubber-stamp — that is unacceptable.",
-			"Do a full holistic review — don't limit yourself to prior feedback.",
-		);
-	}
-
-	return parts.join("\n");
+	return promptSets.review.buildReviewPrompt(p);
 }
 
 export function buildFixPrompt(reviewText: string, contextPaths: string[], round: number): string {
-	const cleaned = sanitize(reviewText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
-	return [
-		`## Code Review Feedback — Round ${round}`,
-		"",
-		cleaned,
-		"",
-		"---",
-		"",
-		"Address every blocking issue listed above:",
-		"- **Fix it**, or **explain why you disagree** (the reviewer will accept reasonable justifications).",
-		"- Nitpicks are optional — fix them if you agree, skip if you don't.",
-		"",
-		"### Git rules (mandatory)",
-		"- If changes are **uncommitted** (unstaged/staged): leave them uncommitted. Do not commit.",
-		"- If changes span **a single commit**: `git add -A && git commit --amend --no-edit`",
-		"- If changes span **multiple commits** (the reviewer tagged issues with commit SHAs):",
-		"  1. Fix each issue, then stage ONLY its files: `git add <files>`",
-		"  2. Create a fixup commit targeting the right SHA: `git commit --fixup=<sha>`",
-		"  3. **YOU MUST** run the autosquash rebase after ALL fixup commits are created:",
-		"     ```bash",
-		"     GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <parent-of-oldest-fixed-commit>",
-		"     ```",
-		"     This is NOT optional. If you skip it, the fixups remain as separate commits.",
-		"  If the rebase has conflicts, resolve them and `git rebase --continue`.",
-		"- If the reviewer asked to **split a commit**:",
-		"  1. `GIT_SEQUENCE_EDITOR=\"sed -i '' 's/^pick \\(<sha>\\)/edit \\1/'\" git rebase -i <parent>`",
-		"  2. `git reset HEAD~` to unstage everything",
-		"  3. Selectively `git add` and `git commit` each logical piece",
-		"  4. `git rebase --continue`",
-		"  Do NOT ask for confirmation. Execute the split immediately.",
-		"- **Never create new standalone commits** unless splitting. Only --amend or --fixup.",
-		"",
-		"### CRITICAL: Never open an interactive editor",
-		"- ALWAYS prefix `git rebase -i` with `GIT_SEQUENCE_EDITOR=true` (to auto-accept) or `GIT_SEQUENCE_EDITOR=\"sed ...\"` (to script edits).",
-		"- NEVER run bare `git rebase -i` — it opens vim/vi and you WILL get stuck.",
-		"- Same applies to `git commit` without `-m` or `--no-edit` — always pass a message flag.",
-		"",
-		"IMPORTANT: Do NOT output any VERDICT lines. You are the fixer, not the reviewer.",
-		"",
-		"When you have addressed ALL blocking issues (fixed or explained why you disagree),",
-		"end your response with exactly:",
-		"FIXES_COMPLETE",
-		expandContextPaths(contextPaths),
-	].join("\n");
+	return promptSets.review.buildFixPrompt(reviewText, contextPaths, round);
 }
