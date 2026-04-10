@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import reviewExtension from "../index.ts";
+import loopExtension from "../index.ts";
 
 function createHarness(setModelOk: boolean) {
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
@@ -80,18 +80,18 @@ function createHarness(setModelOk: boolean) {
 		registerMessageRenderer() {},
 	};
 
-	reviewExtension(pi as any);
+	loopExtension(pi as any);
 	return { commands, ctx, notifications, userMessages };
 }
 
-test("review stops cleanly when reviewer model cannot be activated", async () => {
+test("loop stops cleanly when overseer model cannot be activated", async () => {
 	const h = createHarness(false);
-	const review = h.commands.get("review");
-	assert.ok(review, "review command registered");
+	const loop = h.commands.get("loop");
+	assert.ok(loop, "loop command registered");
 
-	await review("fix the auth flow", h.ctx);
+	await loop("fix the auth flow", h.ctx);
 
-	assert.equal(h.userMessages.length, 0, "does not send a review prompt when model switch fails");
+	assert.equal(h.userMessages.length, 0, "does not send an overseer prompt when model switch fails");
 	assert.ok(
 		h.notifications.some(n => n.level === "error" && /api key|model/i.test(n.message)),
 		"shows an actionable error notification",

@@ -1,13 +1,13 @@
 /**
- * Review Extension — automated review loop between a reviewer and fixer model.
+ * Loop Extension — automated loop between an overseer and workhorse model.
  *
- * /review [focus] [@path ...]       — Start review loop
- * /review:exec [focus] [@path ...]  — Start exec loop (plan orchestrator → implementer)
- * /review:resume                    — Resume from session state
- * /review:rounds <n>                — Change max rounds
- * /review:stop                      — Stop the loop
- * /review:log                       — Browse verdicts and fixer summaries
- * /review:cfg                       — Settings UI
+ * /loop [focus] [@path ...]       — Start review loop
+ * /loop:exec [focus] [@path ...]  — Start exec loop (plan orchestrator → workhorse)
+ * /loop:resume                    — Resume from session state
+ * /loop:rounds <n>                — Change max rounds
+ * /loop:stop                      — Stop the loop
+ * /loop:log                       — Browse verdicts and workhorse summaries
+ * /loop:cfg                       — Settings UI
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -19,7 +19,7 @@ import { promptSets } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
-import { showReviewLog } from "./log-view.js";
+import { showLog } from "./log-view.js";
 
 // Block interactive editors during agent turns.
 // GIT_EDITOR/EDITOR/VISUAL → fail with actionable message so the agent retries correctly.
@@ -52,20 +52,20 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function log(text: string): void {
-		pi.sendMessage({ customType: "review-log", content: text, display: true }, { triggerTurn: false });
+		pi.sendMessage({ customType: "loop-log", content: text, display: true }, { triggerTurn: false });
 	}
 
-	function findReviewAnchor(ctx: any): { id: string; data: any } | null {
+	function findAnchor(ctx: any): { id: string; data: any } | null {
 		const entries = ctx.sessionManager.getEntries();
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const e = entries[i];
-			if (e.type === "custom" && e.customType === "review-anchor") return { id: e.id, data: e.data };
+			if (e.type === "custom" && e.customType === "loop-anchor") return { id: e.id, data: e.data };
 		}
 		return null;
 	}
 
-	function rememberReviewAnchor(ctx: any): void {
-		pi.appendEntry("review-anchor", {
+	function rememberAnchor(ctx: any): void {
+		pi.appendEntry("loop-anchor", {
 			focus: state.focus,
 			initialRequest: state.initialRequest,
 			contextPaths: state.contextPaths,
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI) {
 
 	async function navigateToEntry(targetId: string, ctx: any): Promise<boolean> {
 		if (typeof ctx.navigateTree !== "function") {
-			ctx.ui.notify("Review transition requires command context", "error");
+			ctx.ui.notify("Loop transition requires command context", "error");
 			await stopLoop(ctx);
 			return false;
 		}
@@ -84,25 +84,25 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function navigateToAnchor(ctx: any): Promise<boolean> {
-		if (!state.anchorEntryId) state.anchorEntryId = findReviewAnchor(ctx)?.id ?? null;
+		if (!state.anchorEntryId) state.anchorEntryId = findAnchor(ctx)?.id ?? null;
 		if (!state.anchorEntryId) {
-			ctx.ui.notify("No review anchor found", "error");
+			ctx.ui.notify("No loop anchor found", "error");
 			await stopLoop(ctx);
 			return false;
 		}
 		return navigateToEntry(state.anchorEntryId, ctx);
 	}
 
-	async function continueLoop(eventCtx: any, action: { type: "review"; summaryText?: string } | { type: "fix"; reviewText: string }): Promise<void> {
+	async function continueLoop(eventCtx: any, action: { type: "oversee"; summaryText?: string } | { type: "workhorse"; overseerText: string }): Promise<void> {
 		const ctx = loopCommandCtx;
 		if (!ctx) {
-			eventCtx.ui.notify("Review loop lost its command context", "error");
+			eventCtx.ui.notify("Loop lost its command context", "error");
 			await stopLoop(eventCtx);
 			return;
 		}
 		await ctx.waitForIdle();
-		if (action.type === "fix") await startFix(action.reviewText, ctx);
-		else await startReview(ctx, action.summaryText);
+		if (action.type === "workhorse") await startWorkhorse(action.overseerText, ctx);
+		else await startOverseer(ctx, action.summaryText);
 	}
 
 	async function setAgent(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
@@ -115,63 +115,63 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Transitions ─────────────────────────────────────
 
-	async function startReview(ctx: any, summaryText?: string): Promise<void> {
+	async function startOverseer(ctx: any, summaryText?: string): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
 		if (state.reviewMode === "fresh") {
 			if (!await navigateToAnchor(ctx)) return;
 		} else if (state.round > 1) {
-			if (!state.reviewLeafId) {
-				ctx.ui.notify("No review branch to return to", "error");
+			if (!state.overseerLeafId) {
+				ctx.ui.notify("No loop branch to return to", "error");
 				await stopLoop(ctx);
 				return;
 			}
-			if (!await navigateToEntry(state.reviewLeafId, ctx)) return;
+			if (!await navigateToEntry(state.overseerLeafId, ctx)) return;
 			if (summaryText) {
-				pi.sendMessage({ customType: "fixer-summary", content: summaryText, display: true }, { triggerTurn: false });
+				pi.sendMessage({ customType: "workhorse-summary", content: summaryText, display: true }, { triggerTurn: false });
 			}
 		}
-		if (!await setAgent(cfg.reviewerModel, cfg.reviewerThinking, ctx)) return;
+		if (!await setAgent(cfg.overseerModel, cfg.overseerThinking, ctx)) return;
 
 		state.phase = "reviewing";
-		state.reviewLeafId = null;
-		ctx.ui.setStatus("review", `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.reviewerModel} reviewing`);
-		log(`[Round ${state.round}] Reviewer: ${cfg.reviewerModel} · mode: ${state.reviewMode}`);
+		state.overseerLeafId = null;
+		ctx.ui.setStatus("loop", `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.overseerModel} reviewing`);
+		log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode}`);
 		const prompts = promptSets[state.mode];
-		pi.sendUserMessage(prompts.buildReviewPrompt({
+		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
-			contextPaths: state.contextPaths, fixerSummaries: state.fixerSummaries,
+			contextPaths: state.contextPaths, workhorseSummaries: state.workhorseSummaries,
 		}));
 	}
 
-	async function startFix(reviewText: string, ctx: any): Promise<void> {
+	async function startWorkhorse(overseerText: string, ctx: any): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
-		state.reviewLeafId = ctx.sessionManager.getLeafId();
+		state.overseerLeafId = ctx.sessionManager.getLeafId();
 		if (!await navigateToAnchor(ctx)) return;
-		if (!await setAgent(cfg.fixerModel, cfg.fixerThinking, ctx)) return;
+		if (!await setAgent(cfg.workhorseModel, cfg.workhorseThinking, ctx)) return;
 
 		state.phase = "fixing";
-		ctx.ui.setStatus("review", `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.fixerModel} fixing`);
-		log(`[Round ${state.round}] Fixer: ${cfg.fixerModel}`);
+		ctx.ui.setStatus("loop", `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.workhorseModel} fixing`);
+		log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
-		pi.sendUserMessage(prompts.buildFixPrompt(reviewText, state.contextPaths, state.round));
+		pi.sendUserMessage(prompts.buildWorkhorsePrompt(overseerText, state.contextPaths, state.round));
 	}
 
-	async function onFixerDone(fixerText: string, eventCtx: any): Promise<void> {
-		const summary = sanitize(stripVerdict(fixerText));
-		const summaryText = `[Fixer Round ${state.round}] ${summary}`;
-		state.fixerSummaries.push(summaryText);
-		recordFixer(state.round, summaryText);
-		log(`🔧 Fixes applied\n${summary}`);
+	async function onWorkhorseDone(workhorseText: string, eventCtx: any): Promise<void> {
+		const summary = sanitize(stripVerdict(workhorseText));
+		const summaryText = `[Workhorse Round ${state.round}] ${summary}`;
+		state.workhorseSummaries.push(summaryText);
+		recordWorkhorse(state.round, summaryText);
+		log(`🔧 Workhorse done\n${summary}`);
 		state.round++;
-		await continueLoop(eventCtx, { type: "review", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
+		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
 		state.phase = "idle";
-		state.reviewLeafId = null;
+		state.overseerLeafId = null;
 		loopCommandCtx = null;
-		ctx.ui.setStatus("review", "");
+		ctx.ui.setStatus("loop", "");
 		restoreEditorEnv();
 		if (!wasRunning || !state.originalModelStr) return;
 
@@ -179,7 +179,7 @@ export default function (pi: ExtensionAPI) {
 		if (!model) { ctx.ui.notify(`Could not restore model: ${state.originalModelStr}`, "error"); return; }
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking);
-		log(`Review loop ended. Restored model: ${state.originalModelStr} · thinking: ${state.originalThinking}`);
+		log(`Loop ended. Restored model: ${state.originalModelStr} · thinking: ${state.originalThinking}`);
 	}
 
 	// ── agent_end ───────────────────────────────────────
@@ -191,37 +191,37 @@ export default function (pi: ExtensionAPI) {
 
 		if (state.phase === "reviewing") {
 			if (!text.trim()) return;
-			handleReviewerEnd(text, ctx);
+			handleOverseerEnd(text, ctx);
 		} else if (state.phase === "fixing") {
-			handleFixerEnd(text, ctx);
+			handleWorkhorseEnd(text, ctx);
 		}
 	});
 
-	function handleReviewerEnd(text: string, ctx: any): void {
+	function handleOverseerEnd(text: string, ctx: any): void {
 		const verdict = matchVerdict(text);
 
 		if (verdict === "approved") {
-			recordReview(state.round, "approved", text);
+			recordOverseer(state.round, "approved", text);
 			log(`✅ APPROVED`);
 			deferIf("reviewing", () => { ctx.ui.notify(`✅ Approved after ${state.round} round(s)`, "success"); stopLoop(ctx); });
 			return;
 		}
 		if (verdict === "changes_requested") {
-			recordReview(state.round, "changes_requested", text);
+			recordOverseer(state.round, "changes_requested", text);
 			const summary = sanitize(stripVerdict(text));
 			log(`❌ CHANGES REQUESTED\n${summary}`);
 			deferIf("reviewing", () => {
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
-				void continueLoop(ctx, { type: "fix", reviewText: text });
+				void continueLoop(ctx, { type: "workhorse", overseerText: text });
 			});
 			return;
 		}
-		deferIf("reviewing", () => pi.sendUserMessage("Continue your review. When done, end with VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED"));
+		deferIf("reviewing", () => pi.sendUserMessage("Continue. When done, end with VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED"));
 	}
 
-	function handleFixerEnd(text: string, ctx: any): void {
+	function handleWorkhorseEnd(text: string, ctx: any): void {
 		if (hasFixesComplete(text)) {
-			deferIf("fixing", () => void onFixerDone(text, ctx));
+			deferIf("fixing", () => void onWorkhorseDone(text, ctx));
 			return;
 		}
 		deferIf("fixing", () => pi.sendUserMessage("Continue addressing the remaining issues. When all fixes are done, end with FIXES_COMPLETE"));
@@ -229,21 +229,21 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Round tracking ──────────────────────────────────
 
-	function recordReview(round: number, verdict: "approved" | "changes_requested", text: string): void {
+	function recordOverseer(round: number, verdict: "approved" | "changes_requested", text: string): void {
 		const r = state.roundResults.find(r => r.round === round);
-		if (r) { r.verdict = verdict; r.reviewText = text; }
-		else state.roundResults.push({ round, verdict, reviewText: text, fixerSummary: "" });
+		if (r) { r.verdict = verdict; r.overseerText = text; }
+		else state.roundResults.push({ round, verdict, overseerText: text, workhorseSummary: "" });
 	}
 
-	function recordFixer(round: number, summary: string): void {
+	function recordWorkhorse(round: number, summary: string): void {
 		const r = state.roundResults.find(r => r.round === round);
-		if (r) r.fixerSummary = summary;
+		if (r) r.workhorseSummary = summary;
 	}
 
 	// ── Commands ────────────────────────────────────────
 
 	async function startLoop(mode: LoopMode, args: string, ctx: any): Promise<void> {
-		if (state.phase !== "idle") { ctx.ui.notify("Review loop already running — /review:stop to cancel", "warning"); return; }
+		if (state.phase !== "idle") { ctx.ui.notify("Loop already running — /loop:stop to cancel", "warning"); return; }
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
 		const { focus, contextPaths } = parseArgs(trimmedArgs, ctx.cwd);
@@ -254,30 +254,30 @@ export default function (pi: ExtensionAPI) {
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 		});
 		log(`📝 Request\n${state.initialRequest}`);
-		rememberReviewAnchor(ctx);
+		rememberAnchor(ctx);
 		blockInteractiveEditors();
 		ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
 		await ctx.waitForIdle();
-		await startReview(ctx);
+		await startOverseer(ctx);
 	}
 
-	pi.registerCommand("review", {
-		description: "Start review loop. Usage: /review [focus] [@path ...]",
+	pi.registerCommand("loop", {
+		description: "Start loop. Usage: /loop [focus] [@path ...]",
 		handler: (args, ctx) => startLoop("review", args, ctx),
 	});
 
-	pi.registerCommand("review:exec", {
-		description: "Start exec loop (orchestrator → implementer). Usage: /review:exec [focus] [@path ...]",
+	pi.registerCommand("loop:exec", {
+		description: "Start exec loop (orchestrator → workhorse). Usage: /loop:exec [focus] [@path ...]",
 		handler: (args, ctx) => startLoop("exec", args, ctx),
 	});
 
-	pi.registerCommand("review:resume", {
-		description: "Resume review loop from session state",
+	pi.registerCommand("loop:resume", {
+		description: "Resume loop from session state",
 		handler: async (_args, ctx) => {
-			if (state.phase !== "idle") { ctx.ui.notify("Review loop already running", "warning"); return; }
+			if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
 			const recovered = reconstructState(ctx);
-			if (!recovered) { ctx.ui.notify("Nothing to resume. Use /review to start.", "info"); return; }
-			const anchor = findReviewAnchor(ctx);
+			if (!recovered) { ctx.ui.notify("Nothing to resume. Use /loop to start.", "info"); return; }
+			const anchor = findAnchor(ctx);
 			const cfg = loadConfig(ctx.cwd);
 			loopCommandCtx = ctx;
 			state = newState({
@@ -287,55 +287,55 @@ export default function (pi: ExtensionAPI) {
 				contextPaths: Array.isArray(anchor?.data?.contextPaths) ? anchor.data.contextPaths : [],
 				maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
-				reviewLeafId: recovered.reviewLeafId,
+				overseerLeafId: recovered.overseerLeafId,
 				anchorEntryId: anchor?.id ?? null,
 			});
 			blockInteractiveEditors();
 			ctx.ui.notify(`Resuming round ${recovered.round} (${recovered.phase} phase)`, "info");
 			await ctx.waitForIdle();
-			if (recovered.phase === "fix" && recovered.lastReviewText) await startFix(recovered.lastReviewText, ctx);
-			else await startReview(ctx);
+			if (recovered.phase === "workhorse" && recovered.lastOverseerText) await startWorkhorse(recovered.lastOverseerText, ctx);
+			else await startOverseer(ctx);
 		},
 	});
 
-	pi.registerCommand("review:stop", {
-		description: "Stop the review loop",
+	pi.registerCommand("loop:stop", {
+		description: "Stop the loop",
 		handler: async (_args, ctx) => {
-			if (state.phase === "idle") { ctx.ui.notify("No review loop running", "info"); return; }
-			ctx.ui.notify("Review loop stopped", "info");
+			if (state.phase === "idle") { ctx.ui.notify("No loop running", "info"); return; }
+			ctx.ui.notify("Loop stopped", "info");
 			await stopLoop(ctx);
 		},
 	});
 
-	pi.registerCommand("review:rounds", {
-		description: "Change max rounds: /review:rounds <n>",
+	pi.registerCommand("loop:rounds", {
+		description: "Change max rounds: /loop:rounds <n>",
 		handler: async (args, ctx) => {
 			const num = parseInt(args, 10);
 			if (isNaN(num) || num < 1) {
-				ctx.ui.notify(`Current max rounds: ${state.phase !== "idle" ? state.maxRounds : loadConfig(ctx.cwd).maxRounds}. Usage: /review:rounds <n>`, "info");
+				ctx.ui.notify(`Current max rounds: ${state.phase !== "idle" ? state.maxRounds : loadConfig(ctx.cwd).maxRounds}. Usage: /loop:rounds <n>`, "info");
 				return;
 			}
 			state.maxRounds = num;
 			saveConfigField("maxRounds", num);
-			if (state.phase !== "idle") ctx.ui.setStatus("review", `${state.phase === "reviewing" ? "🔍" : "🔧"} Round ${state.round}/${num}`);
+			if (state.phase !== "idle") ctx.ui.setStatus("loop", `${state.phase === "reviewing" ? "🔍" : "🔧"} Round ${state.round}/${num}`);
 			ctx.ui.notify(`Max rounds → ${num}`, "success");
 		},
 	});
 
-	pi.registerCommand("review:log", {
-		description: "Browse reviewer + fixer logs in a modal viewer",
+	pi.registerCommand("loop:log", {
+		description: "Browse overseer + workhorse logs in a modal viewer",
 		handler: async (_args, ctx) => {
-			if (state.roundResults.length === 0 && !state.initialRequest) { ctx.ui.notify("No review rounds recorded yet.", "info"); return; }
-			await showReviewLog(state.initialRequest, state.roundResults, ctx);
+			if (state.roundResults.length === 0 && !state.initialRequest) { ctx.ui.notify("No loop rounds recorded yet.", "info"); return; }
+			await showLog(state.initialRequest, state.roundResults, ctx);
 		},
 	});
 
-	pi.registerCommand("review:debug", {
+	pi.registerCommand("loop:debug", {
 		description: "Simulate a 3-round review loop and open the log viewer",
 		handler: async (_args, ctx) => {
 			const rounds = [
 				{
-					review: [
+					overseer: [
 						"## Critical Issues",
 						"",
 						"### 1. Race condition in `handleConn()`",
@@ -381,7 +381,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"**VERDICT:** CHANGES_REQUESTED",
 					].join("\n"),
-					fix: [
+					workhorse: [
 						"Added sync.RWMutex around connMap access — write lock only for",
 						"map insertion, read lock for lookups.",
 						"",
@@ -403,7 +403,7 @@ export default function (pi: ExtensionAPI) {
 					].join("\n"),
 				},
 				{
-					review: [
+					overseer: [
 						"## Improvements needed",
 						"",
 						"Good progress. The race condition fix and error handling are solid.",
@@ -454,7 +454,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"**VERDICT:** CHANGES_REQUESTED",
 					].join("\n"),
-					fix: [
+					workhorse: [
 						"Narrowed lock scope:",
 						"- Lock only for map insertion and deletion",
 						"- RLock for the health check endpoint's connection count",
@@ -470,7 +470,7 @@ export default function (pi: ExtensionAPI) {
 					].join("\n"),
 				},
 				{
-					review: [
+					overseer: [
 						"## Final review",
 						"",
 						"All issues from rounds 1 and 2 are resolved:",
@@ -495,7 +495,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"**VERDICT:** APPROVED",
 					].join("\n"),
-					fix: "",
+					workhorse: "",
 				},
 			];
 
@@ -503,46 +503,46 @@ export default function (pi: ExtensionAPI) {
 			state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go" });
 			for (const r of rounds) {
 				state.round++;
-				const verdict = matchVerdict(r.review);
-				if (verdict) recordReview(state.round, verdict, r.review);
-				if (r.fix) {
-					const summary = `[Fixer Round ${state.round}] ${sanitize(stripVerdict(r.fix))}`;
-					recordFixer(state.round, summary);
+				const verdict = matchVerdict(r.overseer);
+				if (verdict) recordOverseer(state.round, verdict, r.overseer);
+				if (r.workhorse) {
+					const summary = `[Workhorse Round ${state.round}] ${sanitize(stripVerdict(r.workhorse))}`;
+					recordWorkhorse(state.round, summary);
 				}
 			}
-			await showReviewLog(state.initialRequest, state.roundResults, ctx);
+			await showLog(state.initialRequest, state.roundResults, ctx);
 		},
 	});
 
-	pi.registerCommand("review:cfg", {
-		description: "View or change review loop settings",
+	pi.registerCommand("loop:cfg", {
+		description: "View or change loop settings",
 		handler: async (_args, ctx) => {
 			while (true) {
 				const cfg = loadConfig(ctx.cwd);
-				const action = await ctx.ui.select("Review Settings", [
-					`Reviewer model: ${cfg.reviewerModel}`,
-					`Reviewer thinking: ${cfg.reviewerThinking}`,
-					`Fixer model: ${cfg.fixerModel}`,
-					`Fixer thinking: ${cfg.fixerThinking}`,
+				const action = await ctx.ui.select("Loop Settings", [
+					`Overseer model: ${cfg.overseerModel}`,
+					`Overseer thinking: ${cfg.overseerThinking}`,
+					`Workhorse model: ${cfg.workhorseModel}`,
+					`Workhorse thinking: ${cfg.workhorseThinking}`,
 					`Max rounds: ${cfg.maxRounds}`,
-					`Review mode: ${cfg.reviewMode}`,
+					`Loop mode: ${cfg.reviewMode}`,
 				]);
 				if (!action) break;
-				if (action.startsWith("Reviewer model")) await pickModel("reviewerModel", cfg, ctx);
-				else if (action.startsWith("Reviewer thinking")) await pickThinking("reviewerThinking", cfg.reviewerThinking, ctx);
-				else if (action.startsWith("Fixer model")) await pickModel("fixerModel", cfg, ctx);
-				else if (action.startsWith("Fixer thinking")) await pickThinking("fixerThinking", cfg.fixerThinking, ctx);
+				if (action.startsWith("Overseer model")) await pickModel("overseerModel", cfg, ctx);
+				else if (action.startsWith("Overseer thinking")) await pickThinking("overseerThinking", cfg.overseerThinking, ctx);
+				else if (action.startsWith("Workhorse model")) await pickModel("workhorseModel", cfg, ctx);
+				else if (action.startsWith("Workhorse thinking")) await pickThinking("workhorseThinking", cfg.workhorseThinking, ctx);
 				else if (action.startsWith("Max rounds")) await editMaxRounds(cfg.maxRounds, ctx);
-				else if (action.startsWith("Review mode")) await pickReviewMode(cfg.reviewMode, ctx);
+				else if (action.startsWith("Loop mode")) await pickReviewMode(cfg.reviewMode, ctx);
 			}
 		},
 	});
 
-	async function pickModel(field: "reviewerModel" | "fixerModel", cfg: ReturnType<typeof loadConfig>, ctx: any): Promise<void> {
+	async function pickModel(field: "overseerModel" | "workhorseModel", cfg: ReturnType<typeof loadConfig>, ctx: any): Promise<void> {
 		const models = getScopedModels(ctx.cwd);
 		if (models.length === 0) { ctx.ui.notify("No enabledModels in settings.json", "error"); return; }
 		const current = cfg[field];
-		const picked = await ctx.ui.select(`Select ${field === "reviewerModel" ? "reviewer" : "fixer"} model`,
+		const picked = await ctx.ui.select(`Select ${field === "overseerModel" ? "overseer" : "workhorse"} model`,
 			models.map(m => m === current ? `${m}  ✓` : m));
 		if (!picked) return;
 		const model = picked.replace(/\s+✓$/, "");
@@ -555,7 +555,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isNaN(num) && num > 0 && num !== current) { saveConfigField("maxRounds", num); ctx.ui.notify(`Max rounds → ${num}`, "success"); }
 	}
 
-	async function pickThinking(field: "reviewerThinking" | "fixerThinking", current: string, ctx: any): Promise<void> {
+	async function pickThinking(field: "overseerThinking" | "workhorseThinking", current: string, ctx: any): Promise<void> {
 		const picked = await ctx.ui.select(`Select thinking level`,
 			THINKING_LEVELS.map(l => l === current ? `${l}  ✓` : l));
 		if (!picked) return;
@@ -564,12 +564,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function pickReviewMode(current: ReviewMode, ctx: any): Promise<void> {
-		const picked = await ctx.ui.select("Review mode", [
-			`fresh${current === "fresh" ? "  ✓" : ""}  — clean reviewer each round, holistic re-review`,
-			`incremental${current === "incremental" ? "  ✓" : ""}  — reviewer keeps context, only gets fixer summary`,
+		const picked = await ctx.ui.select("Loop mode", [
+			`fresh${current === "fresh" ? "  ✓" : ""}  — clean overseer each round, holistic re-review`,
+			`incremental${current === "incremental" ? "  ✓" : ""}  — overseer keeps context, only gets workhorse summary`,
 		]);
 		if (!picked) return;
 		const mode = picked.split(/\s/)[0] as ReviewMode;
-		if (mode !== current) { saveConfigField("reviewMode", mode); ctx.ui.notify(`Review mode → ${mode}`, "success"); }
+		if (mode !== current) { saveConfigField("reviewMode", mode); ctx.ui.notify(`Loop mode → ${mode}`, "success"); }
 	}
 }

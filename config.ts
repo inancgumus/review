@@ -6,10 +6,10 @@ import type { Config, ThinkingLevel } from "./types.js";
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"];
 
 const DEFAULTS: Config = {
-	reviewerModel: "openai/gpt-5.4",
-	fixerModel: "anthropic/claude-opus-4-6",
-	reviewerThinking: "xhigh",
-	fixerThinking: "xhigh",
+	overseerModel: "openai/gpt-5.4",
+	workhorseModel: "anthropic/claude-opus-4-6",
+	overseerThinking: "xhigh",
+	workhorseThinking: "xhigh",
 	maxRounds: 10,
 	reviewMode: "fresh",
 };
@@ -28,12 +28,12 @@ function validThinking(v: unknown): ThinkingLevel | undefined {
 export { THINKING_LEVELS };
 
 export function loadConfig(_cwd: string): Config {
-	const saved = readJSON(SETTINGS_PATH)?.["review"] ?? {};
+	const saved = readJSON(SETTINGS_PATH)?.["loop"] ?? {};
 	return {
-		reviewerModel: saved.reviewerModel ?? DEFAULTS.reviewerModel,
-		fixerModel: saved.fixerModel ?? DEFAULTS.fixerModel,
-		reviewerThinking: validThinking(saved.reviewerThinking) ?? DEFAULTS.reviewerThinking,
-		fixerThinking: validThinking(saved.fixerThinking) ?? DEFAULTS.fixerThinking,
+		overseerModel: saved.overseerModel ?? DEFAULTS.overseerModel,
+		workhorseModel: saved.workhorseModel ?? DEFAULTS.workhorseModel,
+		overseerThinking: validThinking(saved.overseerThinking) ?? DEFAULTS.overseerThinking,
+		workhorseThinking: validThinking(saved.workhorseThinking) ?? DEFAULTS.workhorseThinking,
 		maxRounds: saved.maxRounds ?? DEFAULTS.maxRounds,
 		reviewMode: saved.reviewMode === "incremental" ? "incremental" : DEFAULTS.reviewMode,
 	};
@@ -53,8 +53,8 @@ export function getScopedModels(cwd: string): string[] {
 export function saveConfigField(key: keyof Config, value: string | number): void {
 	let settings: Record<string, any> = {};
 	try { settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8")); } catch { /* new */ }
-	if (!settings["review"]) settings["review"] = {};
-	settings["review"][key] = value;
+	if (!settings["loop"]) settings["loop"] = {};
+	settings["loop"][key] = value;
 	fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
 	fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
 }

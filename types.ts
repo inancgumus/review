@@ -5,27 +5,27 @@ export type ReviewMode = "fresh" | "incremental";
 export type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
 
 export interface Config {
-	reviewerModel: string;
-	fixerModel: string;
-	reviewerThinking: ThinkingLevel;
-	fixerThinking: ThinkingLevel;
+	overseerModel: string;
+	workhorseModel: string;
+	overseerThinking: ThinkingLevel;
+	workhorseThinking: ThinkingLevel;
 	maxRounds: number;
 	reviewMode: ReviewMode;
 }
 
 export type Phase = "idle" | "reviewing" | "fixing";
 
-export interface ReviewPromptParams {
+export interface OverseerPromptParams {
 	focus: string;
 	round: number;
 	reviewMode: ReviewMode;
 	contextPaths: string[];
-	fixerSummaries: string[];
+	workhorseSummaries: string[];
 }
 
 export interface PromptSet {
-	buildReviewPrompt(p: ReviewPromptParams): string;
-	buildFixPrompt(reviewText: string, contextPaths: string[], round: number): string;
+	buildOverseerPrompt(p: OverseerPromptParams): string;
+	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number): string;
 }
 
 export type Verdict = "approved" | "changes_requested" | null;
@@ -33,8 +33,8 @@ export type Verdict = "approved" | "changes_requested" | null;
 export interface RoundResult {
 	round: number;
 	verdict: Verdict;
-	reviewText: string;
-	fixerSummary: string;
+	overseerText: string;
+	workhorseSummary: string;
 }
 
 export interface LoopState {
@@ -48,9 +48,9 @@ export interface LoopState {
 	reviewMode: ReviewMode;
 	originalModelStr: string;
 	originalThinking: string;
-	reviewLeafId: string | null;
+	overseerLeafId: string | null;
 	anchorEntryId: string | null;
-	fixerSummaries: string[];
+	workhorseSummaries: string[];
 	roundResults: RoundResult[];
 }
 
@@ -66,9 +66,9 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		reviewMode: "fresh",
 		originalModelStr: "",
 		originalThinking: "xhigh",
-		reviewLeafId: null,
+		overseerLeafId: null,
 		anchorEntryId: null,
-		fixerSummaries: [],
+		workhorseSummaries: [],
 		roundResults: [],
 		...overrides,
 	};

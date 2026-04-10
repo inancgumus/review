@@ -7,8 +7,8 @@ const LIST_WIDTH = 28;
 
 type ListEntry =
 	| { type: "request"; text: string }
-	| { type: "reviewer"; round: number; result: RoundResult }
-	| { type: "fixer"; round: number; result: RoundResult };
+	| { type: "overseer"; round: number; result: RoundResult }
+	| { type: "workhorse"; round: number; result: RoundResult };
 
 interface SearchHit { entryIdx: number; lineIdx: number; }
 
@@ -44,23 +44,23 @@ function pad(
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-function cleanReviewerText(text: string): string {
+function cleanOverseerText(text: string): string {
 	return text
 		.replace(/\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}(APPROVED|CHANGES_REQUESTED)\*{0,2}/gi, "")
 		.trim();
 }
 
-function cleanFixerText(text: string): string {
-	return text.replace(/^\[Fixer Round \d+\]\s*/i, "").trim();
+function cleanWorkhorseText(text: string): string {
+	return text.replace(/^\[Workhorse Round \d+\]\s*/i, "").trim();
 }
 
 function buildEntries(initialRequest: string, roundResults: RoundResult[]): ListEntry[] {
 	var entries: ListEntry[] = [{ type: "request", text: initialRequest }];
 	for (var i = 0; i < roundResults.length; i++) {
 		var result = roundResults[i];
-		entries.push({ type: "reviewer", round: result.round, result: result });
-		if (result.fixerSummary.trim()) {
-			entries.push({ type: "fixer", round: result.round, result: result });
+		entries.push({ type: "overseer", round: result.round, result: result });
+		if (result.workhorseSummary.trim()) {
+			entries.push({ type: "workhorse", round: result.round, result: result });
 		}
 	}
 	return entries;
@@ -70,24 +70,24 @@ function buildEntryMarkdown(entry: ListEntry): string {
 	if (entry.type === "request") {
 		return "# User request\n\n" + (entry.text ? ("`" + entry.text + "`") : "_No user request recorded._");
 	}
-	if (entry.type === "reviewer") {
-		return "# Round " + entry.round + ": Reviewer\n\n**Verdict:** " + verdictLabel(entry.result) + "\n\n" +
-			(cleanReviewerText(entry.result.reviewText) || "_No reviewer output recorded._");
+	if (entry.type === "overseer") {
+		return "# Round " + entry.round + ": Overseer\n\n**Verdict:** " + verdictLabel(entry.result) + "\n\n" +
+			(cleanOverseerText(entry.result.overseerText) || "_No overseer output recorded._");
 	}
-	return "# Round " + entry.round + ": Fixer\n\n" +
-		(cleanFixerText(entry.result.fixerSummary) || "_No fixer output recorded._");
+	return "# Round " + entry.round + ": Workhorse\n\n" +
+		(cleanWorkhorseText(entry.result.workhorseSummary) || "_No workhorse output recorded._");
 }
 
 function entryTitle(entry: ListEntry): string {
 	if (entry.type === "request") return "\ud83d\udcdd Request";
-	if (entry.type === "reviewer") return verdictIcon(entry.result) + " Round " + entry.round + ": Reviewer";
-	return "\ud83d\udd27 Round " + entry.round + ": Fixer";
+	if (entry.type === "overseer") return verdictIcon(entry.result) + " Round " + entry.round + ": Overseer";
+	return "\ud83d\udd27 Round " + entry.round + ": Workhorse";
 }
 
 function entrySubtitle(entry: ListEntry): string {
 	if (entry.type === "request") return preview(entry.text) || "No request";
-	if (entry.type === "reviewer") return preview(cleanReviewerText(entry.result.reviewText)) || "No details yet";
-	return preview(cleanFixerText(entry.result.fixerSummary)) || "No details yet";
+	if (entry.type === "overseer") return preview(cleanOverseerText(entry.result.overseerText)) || "No details yet";
+	return preview(cleanWorkhorseText(entry.result.workhorseSummary)) || "No details yet";
 }
 
 function buildListLines(
@@ -114,10 +114,10 @@ function buildListLines(
 
 function headerTitle(entry: ListEntry): string {
 	if (entry.type === "request") return " \ud83d\udcdd Request ";
-	if (entry.type === "reviewer") {
-		return " " + verdictIcon(entry.result) + " Round " + entry.round + ": Reviewer \u00b7 " + verdictLabel(entry.result) + " ";
+	if (entry.type === "overseer") {
+		return " " + verdictIcon(entry.result) + " Round " + entry.round + ": Overseer \u00b7 " + verdictLabel(entry.result) + " ";
 	}
-	return " \ud83d\udd27 Round " + entry.round + ": Fixer ";
+	return " \ud83d\udd27 Round " + entry.round + ": Workhorse ";
 }
 
 function stripAnsi(text: string): string {
@@ -169,9 +169,9 @@ function highlightLine(line: string, query: string, activeOccurrence: number): s
 	return result.join("");
 }
 
-export async function showReviewLog(initialRequest: string, roundResults: RoundResult[], ctx: any): Promise<void> {
+export async function showLog(initialRequest: string, roundResults: RoundResult[], ctx: any): Promise<void> {
 	if (!ctx.hasUI) {
-		ctx.ui.notify("/review:log requires interactive mode", "error");
+		ctx.ui.notify("/loop:log requires interactive mode", "error");
 		return;
 	}
 
@@ -382,7 +382,7 @@ export async function showReviewLog(initialRequest: string, roundResults: RoundR
 
 				var rows: string[] = [];
 				var border = function (text: string) { return theme.fg("border", text); };
-				var header = " Review Log \u00b7 " + roundResults.length + " round(s) ";
+				var header = " Loop Log \u00b7 " + roundResults.length + " round(s) ";
 				var headerPad = Math.max(0, inner - visibleWidth(header));
 				var title = headerTitle(current);
 				var totalLines = detailLines(width).length;

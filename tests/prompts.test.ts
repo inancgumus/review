@@ -3,12 +3,12 @@ import test from "node:test";
 import { promptSets } from "../prompts.ts";
 
 test("exec orchestrator prompt includes orchestrator role and drip-feed instruction", () => {
-	const prompt = promptSets.exec.buildReviewPrompt({
+	const prompt = promptSets.exec.buildOverseerPrompt({
 		focus: "implement the auth module",
 		round: 1,
 		reviewMode: "fresh",
 		contextPaths: [],
-		fixerSummaries: [],
+		workhorseSummaries: [],
 	});
 
 	assert.match(prompt, /orchestrat/i, "mentions orchestrator role");
@@ -19,20 +19,20 @@ test("exec orchestrator prompt includes orchestrator role and drip-feed instruct
 	assert.match(prompt, /do not.*(modify|edit|write)/i, "forbids file modifications");
 });
 
-test("exec orchestrator round 2 includes fixer summaries", () => {
-	const prompt = promptSets.exec.buildReviewPrompt({
+test("exec orchestrator round 2 includes workhorse summaries", () => {
+	const prompt = promptSets.exec.buildOverseerPrompt({
 		focus: "implement auth",
 		round: 2,
 		reviewMode: "fresh",
 		contextPaths: [],
-		fixerSummaries: ["[Fixer Round 1] Created User struct in models/user.go"],
+		workhorseSummaries: ["[Workhorse Round 1] Created User struct in models/user.go"],
 	});
 
-	assert.match(prompt, /Created User struct/, "includes fixer summary from previous round");
+	assert.match(prompt, /Created User struct/, "includes workhorse summary from previous round");
 });
 
 test("exec implementer prompt includes orchestrator instructions and FIXES_COMPLETE", () => {
-	const prompt = promptSets.exec.buildFixPrompt(
+	const prompt = promptSets.exec.buildWorkhorsePrompt(
 		"Implement step 1: create the User struct in models/user.go\nVERDICT: CHANGES_REQUESTED",
 		[],
 		1,
@@ -47,33 +47,33 @@ test("exec implementer prompt includes orchestrator instructions and FIXES_COMPL
 });
 
 test("exec implementer prompt uses commit (not amend) for new work", () => {
-	const prompt = promptSets.exec.buildFixPrompt("Implement the login endpoint", [], 1);
+	const prompt = promptSets.exec.buildWorkhorsePrompt("Implement the login endpoint", [], 1);
 
 	assert.match(prompt, /git commit -m/, "uses regular commit with message");
 });
 
 test("review prompt set still works unchanged", () => {
-	const prompt = promptSets.review.buildReviewPrompt({
+	const prompt = promptSets.review.buildOverseerPrompt({
 		focus: "check auth",
 		round: 1,
 		reviewMode: "fresh",
 		contextPaths: [],
-		fixerSummaries: [],
+		workhorseSummaries: [],
 	});
 
-	assert.match(prompt, /code reviewer/i, "uses code reviewer role");
+	assert.match(prompt, /code overseer/i, "uses code overseer role");
 	assert.match(prompt, /check auth/, "includes focus");
 	assert.match(prompt, /VERDICT: APPROVED/, "includes verdict markers");
 });
 
-test("review fix prompt set still works unchanged", () => {
-	const prompt = promptSets.review.buildFixPrompt(
+test("review workhorse prompt set still works unchanged", () => {
+	const prompt = promptSets.review.buildWorkhorsePrompt(
 		"Fix the race condition\nVERDICT: CHANGES_REQUESTED",
 		[],
 		1,
 	);
 
-	assert.match(prompt, /Code Review Feedback/, "uses review feedback heading");
-	assert.match(prompt, /Fix the race condition/, "includes review text");
+	assert.match(prompt, /Overseer Feedback/, "uses overseer feedback heading");
+	assert.match(prompt, /Fix the race condition/, "includes overseer text");
 	assert.match(prompt, /FIXES_COMPLETE/, "uses FIXES_COMPLETE marker");
 });

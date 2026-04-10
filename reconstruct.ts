@@ -3,55 +3,55 @@ import { extractText } from "./session.js";
 interface RecoveredState {
 	focus: string;
 	round: number;
-	phase: "review" | "fix";
-	lastReviewText: string;
-	reviewLeafId: string | null;
+	phase: "oversee" | "workhorse";
+	lastOverseerText: string;
+	overseerLeafId: string | null;
 }
 
 export function reconstructState(ctx: any): RecoveredState | null {
 	const entries = ctx.sessionManager.getBranch();
-	let lastFixerRound = 0;
-	let lastReviewText = "";
-	let lastReviewRound = 0;
+	let lastWorkhorseRound = 0;
+	let lastOverseerText = "";
+	let lastOverseerRound = 0;
 	let focus = "all recent code changes";
-	let reviewLeafId: string | null = null;
+	let overseerLeafId: string | null = null;
 
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const e = entries[i];
 
-		if (e.type === "custom_message" && (e as any).customType === "fixer-summary") {
+		if (e.type === "custom_message" && (e as any).customType === "workhorse-summary") {
 			const text = extractText((e as any).content);
-			const m = text.match(/\[Fixer Round (\d+)\]/);
-			if (m && lastFixerRound === 0) lastFixerRound = parseInt(m[1], 10);
+			const m = text.match(/\[Workhorse Round (\d+)\]/);
+			if (m && lastWorkhorseRound === 0) lastWorkhorseRound = parseInt(m[1], 10);
 			continue;
 		}
 
 		if (e.type !== "message") continue;
 		const msg = e.message;
-		if (msg.role !== "assistant" || lastReviewRound !== 0) continue;
+		if (msg.role !== "assistant" || lastOverseerRound !== 0) continue;
 
 		const text = extractText(msg.content);
 		if (/VERDICT:\s*\*{0,2}APPROVED\*{0,2}/i.test(text)) return null;
 
 		if (/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/i.test(text)) {
-			lastReviewText = text;
-			reviewLeafId = e.id;
-			lastReviewRound = findReviewRound(entries, i);
+			lastOverseerText = text;
+			overseerLeafId = e.id;
+			lastOverseerRound = findOverseerRound(entries, i);
 			focus = findFocus(entries, i) || focus;
 			break;
 		}
 	}
 
-	if (lastFixerRound > 0 && lastFixerRound >= lastReviewRound) {
-		return { focus, round: lastFixerRound + 1, phase: "review", lastReviewText: "", reviewLeafId };
+	if (lastWorkhorseRound > 0 && lastWorkhorseRound >= lastOverseerRound) {
+		return { focus, round: lastWorkhorseRound + 1, phase: "oversee", lastOverseerText: "", overseerLeafId };
 	}
-	if (lastReviewRound > 0 && lastReviewText) {
-		return { focus, round: lastReviewRound, phase: "fix", lastReviewText, reviewLeafId };
+	if (lastOverseerRound > 0 && lastOverseerText) {
+		return { focus, round: lastOverseerRound, phase: "workhorse", lastOverseerText, overseerLeafId };
 	}
 	return null;
 }
 
-function findReviewRound(entries: any[], fromIdx: number): number {
+function findOverseerRound(entries: any[], fromIdx: number): number {
 	for (let j = fromIdx - 1; j >= 0; j--) {
 		const e = entries[j];
 		if (e.type !== "message" || e.message.role !== "user") continue;

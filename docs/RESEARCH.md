@@ -1,4 +1,4 @@
-# Review Extension — Subagent Research
+# Loop Extension — Subagent Research
 
 Research on how pi extensions integrate subagents, their trade-offs, and which approach fits the review loop.
 
@@ -24,7 +24,7 @@ Research on how pi extensions integrate subagents, their trade-offs, and which a
 - `ctx.getSystemPrompt()` passes project context (AGENTS.md etc.)
 
 **Cons:**
-- Fixer's tool calls don't render as native pi tool calls — they render inside the tool's `renderResult` as formatted text lines
+- Workhorse's tool calls don't render as native pi tool calls — they render inside the tool's `renderResult` as formatted text lines
 - Custom rendering needed (but matches what pi-amplike and official subagent both do — this IS the pi pattern)
 
 **Key code:** `extensions/lib/subagent-core.ts` → `runSubagent()` function
@@ -102,10 +102,10 @@ Research on how pi extensions integrate subagents, their trade-offs, and which a
 - Simplest implementation
 
 **Cons:**
-- Shared context — reviewer and fixer see each other's messages
+- Shared context — overseer and workhorse see each other's messages
 - Context fills up fast (~50-100K per round)
-- Mitigated by `context` event filtering (strip fixer messages from reviewer's view)
-- Session file grows (fixer messages stay even though reviewer doesn't see them)
+- Mitigated by `context` event filtering (strip workhorse messages from overseer's view)
+- Session file grows (workhorse messages stay even though overseer doesn't see them)
 
 ## Decision
 
@@ -114,11 +114,11 @@ Research on how pi extensions integrate subagents, their trade-offs, and which a
 1. **ESC works** — tool's `signal` parameter propagates abort to `agentLoop`
 2. **Streaming works** — `onUpdate` shows live progress in `renderResult`
 3. **Context isolation** — fresh agentLoop per round, no shared history
-4. **Project context** — `ctx.getSystemPrompt()` passes AGENTS.md to fixer
+4. **Project context** — `ctx.getSystemPrompt()` passes AGENTS.md to workhorse
 5. **No dependencies** — no tmux, no subprocess, in-process
 6. **Proven pattern** — both pi-amplike and official subagent use tool registration
 
-The fixer's tool calls render inside the tool result box (not as native pi tool calls). This is how ALL pi subagent extensions work — it's the pi-native pattern for subagent display.
+The workhorse's tool calls render inside the tool result box (not as native pi tool calls). This is how ALL pi subagent extensions work — it's the pi-native pattern for subagent display.
 
 ## Not explored
 

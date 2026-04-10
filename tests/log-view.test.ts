@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import reviewExtension from "../index.ts";
+import loopExtension from "../index.ts";
 import { loadPiAgent } from "../tui-runtime.ts";
 
 function wait(ms = 150): Promise<void> {
@@ -91,53 +91,53 @@ function createHarness() {
 		},
 	};
 
-	reviewExtension(pi as any);
+	loopExtension(pi as any);
 
-	async function startRound(reviewText: string, fixerText: string, initialRequest = "check auth") {
-		const review = commands.get("review");
-		assert.ok(review, "review command registered");
-		await review(initialRequest, ctx);
+	async function startRound(overseerText: string, workhorseText: string, initialRequest = "check auth") {
+		const loop = commands.get("loop");
+		assert.ok(loop, "loop command registered");
+		await loop(initialRequest, ctx);
 
-		leafId = "review-1";
+		leafId = "overseer-1";
 		entries.push({
-			id: "review-1",
+			id: "overseer-1",
 			type: "message",
-			message: { role: "assistant", content: reviewText, stopReason: "end_turn" },
+			message: { role: "assistant", content: overseerText, stopReason: "end_turn" },
 		});
 		const agentEnd = events.get("agent_end");
 		assert.ok(agentEnd, "agent_end handler registered");
 		agentEnd({}, ctx);
 		await wait();
 
-		leafId = "fix-1";
+		leafId = "workhorse-1";
 		entries.push({
-			id: "fix-1",
+			id: "workhorse-1",
 			type: "message",
-			message: { role: "assistant", content: fixerText, stopReason: "end_turn" },
+			message: { role: "assistant", content: workhorseText, stopReason: "end_turn" },
 		});
 		agentEnd({}, ctx);
 		await wait();
 	}
 
 	async function stopLoop() {
-		const stop = commands.get("review:stop");
-		assert.ok(stop, "review:stop registered");
+		const stop = commands.get("loop:stop");
+		assert.ok(stop, "loop:stop registered");
 		await stop("", ctx);
 	}
 
 	return { commands, ctx, customCalls, selectCalls, sentMessages, userMessages, startRound, stopLoop };
 }
 
-const reviewerText = [
-	"## Reviewer notes",
+const overseerText = [
+	"## Overseer notes",
 	"",
 	"- add a zero-divisor guard",
 	"",
 	"**VERDICT:** CHANGES_REQUESTED",
 ].join("\n");
 
-const fixerText = [
-	"### Fixer summary",
+const workhorseText = [
+	"## Workhorse summary",
 	"",
 	"Added the guard and a regression test.",
 	"",
@@ -151,27 +151,27 @@ function strip(text: string): string {
 	return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-test("live review log includes the user's first review message", async () => {
+test("live loop log includes the user's first message", async () => {
 	const h = createHarness();
-	const review = h.commands.get("review");
-	assert.ok(review, "review command registered");
-	await review("fix the auth flow @cmd/login.go", h.ctx);
+	const loop = h.commands.get("loop");
+	assert.ok(loop, "loop command registered");
+	await loop("fix the auth flow @cmd/login.go", h.ctx);
 
 	const logLines = h.sentMessages
-		.filter(message => message.customType === "review-log")
+		.filter(message => message.customType === "loop-log")
 		.map(message => String(message.content));
 
 	assert.match(logLines.join("\n\n"), /fix the auth flow @cmd\/login\.go/, "logs the initial user request");
 	await h.stopLoop();
 });
 
-test("/review:log opens a centered overlay viewer with explicit height", async () => {
+test("/loop:log opens a centered overlay viewer with explicit height", async () => {
 	const h = createHarness();
-	await h.startRound(reviewerText, fixerText);
+	await h.startRound(overseerText, workhorseText);
 
-	const reviewLog = h.commands.get("review:log");
-	assert.ok(reviewLog, "review:log registered");
-	await reviewLog("", h.ctx);
+	const loopLog = h.commands.get("loop:log");
+	assert.ok(loopLog, "loop:log registered");
+	await loopLog("", h.ctx);
 
 	assert.equal(h.customCalls.length, 1, "opens a custom viewer");
 	assert.equal(h.customCalls[0]?.options?.overlay, true, "uses overlay modal");
@@ -182,13 +182,13 @@ test("/review:log opens a centered overlay viewer with explicit height", async (
 });
 
 test("Tab switches focus between list and detail panels", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, reviewText: "issue A", fixerSummary: "fixed A" },
-		{ round: 2, verdict: "approved" as const, reviewText: "all good", fixerSummary: "" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A" },
+		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "" },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -199,7 +199,7 @@ test("Tab switches focus between list and detail panels", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test tab", rounds, mockCtx);
+	await showLog("test tab", rounds, mockCtx);
 	const component = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 40 } },
 		mockCtx.ui.theme, {}, () => {},
@@ -208,30 +208,30 @@ test("Tab switches focus between list and detail panels", async () => {
 	// Default focus is list. j moves to next entry.
 	component.handleInput("j");
 	let rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Reviewer/, "j moved to reviewer in list");
+	assert.match(rendered, /Round 1: Overseer/, "j moved to overseer in list");
 
 	// Tab switches to detail panel. j now scrolls detail.
 	component.handleInput(TAB);
 	component.handleInput("j");
-	// Should still be on Round 1: Reviewer (entry didn't change, just scrolled)
+	// Should still be on Round 1: Overseer (entry didn't change, just scrolled)
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Reviewer/, "still on reviewer after scroll");
+	assert.match(rendered, /Round 1: Overseer/, "still on overseer after scroll");
 
 	// Tab back to list, j moves to next entry
 	component.handleInput(TAB);
 	component.handleInput("j");
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Fixer/, "j moved to fixer in list");
+	assert.match(rendered, /Round 1: Workhorse/, "j moved to workhorse in list");
 });
 
 test("j/k navigate entries in list panel, q closes", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, reviewText: "issue A", fixerSummary: "fixed A" },
-		{ round: 2, verdict: "approved" as const, reviewText: "all good", fixerSummary: "" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A" },
+		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "" },
 	];
 	let closed = false;
 	let capturedFactory: any;
@@ -243,27 +243,27 @@ test("j/k navigate entries in list panel, q closes", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test nav", rounds, mockCtx);
+	await showLog("test nav", rounds, mockCtx);
 	const component = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 40 } },
 		mockCtx.ui.theme, {},
 		() => { closed = true; },
 	);
 
-	// Default = first entry (Request). j moves down to Reviewer.
+	// Default = first entry (Request). j moves down to Overseer.
 	component.handleInput("j");
 	let rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Reviewer/, "j moved to reviewer");
+	assert.match(rendered, /Round 1: Overseer/, "j moved to overseer");
 
-	// j again to Fixer
+	// j again to Workhorse
 	component.handleInput("j");
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Fixer/, "j moved to fixer");
+	assert.match(rendered, /Round 1: Workhorse/, "j moved to workhorse");
 
-	// k back to Reviewer
+	// k back to Overseer
 	component.handleInput("k");
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Reviewer/, "k moved back to reviewer");
+	assert.match(rendered, /Round 1: Overseer/, "k moved back to overseer");
 
 	// q closes
 	component.handleInput("q");
@@ -271,12 +271,12 @@ test("j/k navigate entries in list panel, q closes", async () => {
 });
 
 test("default selection is first entry (Request), not last", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, reviewText: "review text", fixerSummary: "fixer text" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "review text", workhorseSummary: "fixer text" },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -287,7 +287,7 @@ test("default selection is first entry (Request), not last", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("my request", rounds, mockCtx);
+	await showLog("my request", rounds, mockCtx);
 	const component = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 30 } },
 		mockCtx.ui.theme, {}, () => {},
@@ -299,11 +299,11 @@ test("default selection is first entry (Request), not last", async () => {
 
 test("Request entry is in list, selecting it shows user request in detail", async () => {
 	const h = createHarness();
-	await h.startRound(reviewerText, fixerText, "fix the auth flow @cmd/login.go");
+	await h.startRound(overseerText, workhorseText, "fix the auth flow @cmd/login.go");
 
-	const reviewLog = h.commands.get("review:log");
-	assert.ok(reviewLog, "review:log registered");
-	await reviewLog("", h.ctx);
+	const loopLog = h.commands.get("loop:log");
+	assert.ok(loopLog, "loop:log registered");
+	await loopLog("", h.ctx);
 
 	const viewer = h.customCalls[0];
 	const { initTheme } = await loadPiAgent();
@@ -321,13 +321,13 @@ test("Request entry is in list, selecting it shows user request in detail", asyn
 	await h.stopLoop();
 });
 
-test("list shows Request, Round N: Reviewer, Round N: Fixer as separate entries", async () => {
+test("list shows Request, Round N: Overseer, Round N: Workhorse as separate entries", async () => {
 	const h = createHarness();
-	await h.startRound(reviewerText, fixerText, "fix auth");
+	await h.startRound(overseerText, workhorseText, "fix auth");
 
-	const reviewLog = h.commands.get("review:log");
-	assert.ok(reviewLog, "review:log registered");
-	await reviewLog("", h.ctx);
+	const loopLog = h.commands.get("loop:log");
+	assert.ok(loopLog, "loop:log registered");
+	await loopLog("", h.ctx);
 
 	const viewer = h.customCalls[0];
 	const { initTheme } = await loadPiAgent();
@@ -339,18 +339,18 @@ test("list shows Request, Round N: Reviewer, Round N: Fixer as separate entries"
 	const rendered = strip(component.render(120).join("\n"));
 
 	assert.match(rendered, /Request/, "list shows Request entry");
-	assert.match(rendered, /Round 1: Reviewer/, "list shows Round 1: Reviewer");
-	assert.match(rendered, /Round 1: Fixer/, "list shows Round 1: Fixer");
+	assert.match(rendered, /Round 1: Overseer/, "list shows Round 1: Overseer");
+	assert.match(rendered, /Round 1: Workhorse/, "list shows Round 1: Workhorse");
 	await h.stopLoop();
 });
 
-test("selecting Fixer shows only fixer message, no user request", async () => {
+test("selecting Workhorse shows only workhorse message, no user request", async () => {
 	const h = createHarness();
-	await h.startRound(reviewerText, fixerText, "fix the auth flow");
+	await h.startRound(overseerText, workhorseText, "fix the auth flow");
 
-	const reviewLog = h.commands.get("review:log");
-	assert.ok(reviewLog, "review:log registered");
-	await reviewLog("", h.ctx);
+	const loopLog = h.commands.get("loop:log");
+	assert.ok(loopLog, "loop:log registered");
+	await loopLog("", h.ctx);
 
 	const viewer = h.customCalls[0];
 	const { initTheme } = await loadPiAgent();
@@ -359,25 +359,25 @@ test("selecting Fixer shows only fixer message, no user request", async () => {
 		{ requestRender() {}, terminal: { rows: 40 } },
 		h.ctx.ui.theme, {}, () => {},
 	);
-	// Navigate to fixer: j j (Request -> Reviewer -> Fixer)
+	// Navigate to workhorse: j j (Request -> Overseer -> Workhorse)
 	component.handleInput("j");
 	component.handleInput("j");
 	const rendered = strip(component.render(120).join("\n"));
 
-	assert.match(rendered, /Added the guard/, "fixer content visible in detail");
-	assert.doesNotMatch(rendered, /User request/, "no user request in fixer detail");
+	assert.match(rendered, /Added the guard/, "workhorse content visible in detail");
+	assert.doesNotMatch(rendered, /User request/, "no user request in workhorse detail");
 	await h.stopLoop();
 });
 
-test("/review:log shows Request entry before any rounds complete", async () => {
+test("/loop:log shows Request entry before any rounds complete", async () => {
 	const h = createHarness();
-	const review = h.commands.get("review");
-	assert.ok(review, "review command registered");
-	await review("just say hi", h.ctx);
+	const loop = h.commands.get("loop");
+	assert.ok(loop, "loop command registered");
+	await loop("just say hi", h.ctx);
 
-	const reviewLog = h.commands.get("review:log");
-	assert.ok(reviewLog, "review:log registered");
-	await reviewLog("", h.ctx);
+	const loopLog = h.commands.get("loop:log");
+	assert.ok(loopLog, "loop:log registered");
+	await loopLog("", h.ctx);
 
 	assert.equal(h.customCalls.length, 1, "viewer opens even with zero rounds");
 	const viewer = h.customCalls[0];
@@ -394,7 +394,7 @@ test("/review:log shows Request entry before any rounds complete", async () => {
 });
 
 test("/ searches detail panel text and scrolls to matching line", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -402,8 +402,8 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			reviewText: filler + "\ntarget_line_alpha\n" + filler + "\n**VERDICT:** CHANGES_REQUESTED",
-			fixerSummary: "[Fixer Round 1] " + filler + "\ntarget_line_beta\n" + filler,
+			overseerText: filler + "\ntarget_line_alpha\n" + filler + "\n**VERDICT:** CHANGES_REQUESTED",
+			workhorseSummary: "[Workhorse Round 1] " + filler + "\ntarget_line_beta\n" + filler,
 		},
 	];
 	let capturedFactory: any;
@@ -415,16 +415,16 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test search", rounds, mockCtx);
+	await showLog("test search", rounds, mockCtx);
 	const component = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 20 } },
 		mockCtx.ui.theme, {}, () => {},
 	);
 
-	// Navigate to Reviewer: j from Request
+	// Navigate to Overseer: j from Request
 	component.handleInput("j");
 	let rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /Round 1: Reviewer/, "on reviewer entry");
+	assert.match(rendered, /Round 1: Overseer/, "on overseer entry");
 
 	// Search for target_line
 	component.handleInput("/");
@@ -435,25 +435,25 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 	assert.match(rendered, /target_line_alpha/, "scrolled to matching line in detail panel");
 	assert.match(rendered, /\[1\//, "shows match count indicator");
 
-	// n jumps to next match in fixer entry
+	// n jumps to next match in workhorse entry
 	component.handleInput("n");
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /target_line_beta/, "n jumped to next match in fixer entry");
-	assert.match(rendered, /Round 1: Fixer/, "switched to fixer entry");
+	assert.match(rendered, /target_line_beta/, "n jumped to next match in workhorse entry");
+	assert.match(rendered, /Round 1: Workhorse/, "switched to workhorse entry");
 
 	// N goes back to previous match
 	component.handleInput("N");
 	rendered = strip(component.render(120).join("\n"));
-	assert.match(rendered, /target_line_alpha/, "N went back to reviewer entry");
+	assert.match(rendered, /target_line_alpha/, "N went back to overseer entry");
 });
 
 test("search highlights with ANSI reverse video, Esc clears", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, reviewText: "found a mutex bug\n\n**VERDICT:** CHANGES_REQUESTED", fixerSummary: "fixed it" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "found a mutex bug\n\n**VERDICT:** CHANGES_REQUESTED", workhorseSummary: "fixed it" },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -464,13 +464,13 @@ test("search highlights with ANSI reverse video, Esc clears", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test", rounds, mockCtx);
+	await showLog("test", rounds, mockCtx);
 	const component = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 30 } },
 		mockCtx.ui.theme, {}, () => {},
 	);
 
-	// Navigate to reviewer entry
+	// Navigate to overseer entry
 	component.handleInput("j");
 	component.render(120);
 
@@ -489,12 +489,12 @@ test("search highlights with ANSI reverse video, Esc clears", async () => {
 	assert.doesNotMatch(rendered, /\x1b\[97;41m/, "highlighting cleared after Esc");
 });
 
-test("partial round shows reviewer item without fixer item", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+test("partial round shows overseer item without workhorse item", async () => {
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
-	const roundResults = [{ round: 1, verdict: "changes_requested" as const, reviewText: reviewerText, fixerSummary: "" }];
+	const roundResults = [{ round: 1, verdict: "changes_requested" as const, overseerText: overseerText, workhorseSummary: "" }];
 	let capturedFactory: any;
 	const mockCtx = {
 		hasUI: true,
@@ -505,7 +505,7 @@ test("partial round shows reviewer item without fixer item", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("check auth", roundResults, mockCtx);
+	await showLog("check auth", roundResults, mockCtx);
 	assert.ok(capturedFactory, "viewer factory captured");
 
 	const component = await capturedFactory(
@@ -514,20 +514,20 @@ test("partial round shows reviewer item without fixer item", async () => {
 	);
 	const rendered = strip(component.render(120).join("\n"));
 
-	assert.match(rendered, /Round 1: Reviewer/, "shows reviewer item");
-	assert.doesNotMatch(rendered, /Round 1: Fixer/, "no fixer item for incomplete round");
+	assert.match(rendered, /Round 1: Overseer/, "shows overseer item");
+	assert.doesNotMatch(rendered, /Round 1: Workhorse/, "no workhorse item for incomplete round");
 });
 
 test("current match uses distinct style from other matches", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			reviewText: "Test alpha and Test beta\n\n**VERDICT:** CHANGES_REQUESTED",
-			fixerSummary: "done",
+			overseerText: "Test alpha and Test beta\n\n**VERDICT:** CHANGES_REQUESTED",
+			workhorseSummary: "done",
 		},
 	];
 	let capturedFactory: any;
@@ -539,7 +539,7 @@ test("current match uses distinct style from other matches", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test", rounds, mockCtx);
+	await showLog("test", rounds, mockCtx);
 	const comp = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 30 } },
 		mockCtx.ui.theme, {}, () => {},
@@ -559,7 +559,7 @@ test("current match uses distinct style from other matches", async () => {
 });
 
 test("n/N visually moves highlight to the new match location", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -567,8 +567,8 @@ test("n/N visually moves highlight to the new match location", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			reviewText: "first_match here\n" + filler + "\nsecond_match here\n\n**VERDICT:** CHANGES_REQUESTED",
-			fixerSummary: "done",
+			overseerText: "first_match here\n" + filler + "\nsecond_match here\n\n**VERDICT:** CHANGES_REQUESTED",
+			workhorseSummary: "done",
 		},
 	];
 	let capturedFactory: any;
@@ -580,13 +580,13 @@ test("n/N visually moves highlight to the new match location", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test", rounds, mockCtx);
+	await showLog("test", rounds, mockCtx);
 	const comp = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 15 } },
 		mockCtx.ui.theme, {}, () => {},
 	);
 
-	// Go to reviewer, search "match"
+	// Go to overseer, search "match"
 	comp.handleInput("j");
 	comp.render(120);
 	comp.handleInput("/");
@@ -608,15 +608,15 @@ test("n/N visually moves highlight to the new match location", async () => {
 });
 
 test("highlight uses reset to avoid color bleed from code blocks", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			reviewText: "```go\nfunc handleConn() error {\n```\n\n**VERDICT:** CHANGES_REQUESTED",
-			fixerSummary: "done",
+			overseerText: "```go\nfunc handleConn() error {\n```\n\n**VERDICT:** CHANGES_REQUESTED",
+			workhorseSummary: "done",
 		},
 	];
 	let capturedFactory: any;
@@ -628,7 +628,7 @@ test("highlight uses reset to avoid color bleed from code blocks", async () => {
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("test", rounds, mockCtx);
+	await showLog("test", rounds, mockCtx);
 	const comp = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 30 } },
 		mockCtx.ui.theme, {}, () => {},
@@ -648,12 +648,12 @@ test("highlight uses reset to avoid color bleed from code blocks", async () => {
 });
 
 test("overlay renders enough lines to fill maxHeight for proper centering", async () => {
-	const { showReviewLog } = await import("../log-view.ts");
+	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "approved" as const, reviewText: "ok\n\n**VERDICT:** APPROVED", fixerSummary: "" },
+		{ round: 1, verdict: "approved" as const, overseerText: "ok\n\n**VERDICT:** APPROVED", workhorseSummary: "" },
 	];
 	let capturedFactory: any;
 	let capturedOpts: any;
@@ -665,7 +665,7 @@ test("overlay renders enough lines to fill maxHeight for proper centering", asyn
 			theme: { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t },
 		},
 	};
-	await showReviewLog("short", rounds, mockCtx);
+	await showLog("short", rounds, mockCtx);
 	const comp = await capturedFactory(
 		{ requestRender() {}, terminal: { rows: 40 } },
 		mockCtx.ui.theme, {}, () => {},

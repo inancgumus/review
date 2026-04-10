@@ -1,6 +1,6 @@
-# Review Extension
+# Loop Extension
 
-Two-model code review loop for pi. See [README.md](README.md) for install, usage, and features.
+Two-model loop for pi. See [README.md](README.md) for install, usage, and features.
 
 ## Docs
 
@@ -14,6 +14,6 @@ No classes. Plain functions and types. Keep it flat.
 
 ## Tests
 
-**Automated** (`/tmp/review-e2e/`): `harness.mjs` (shared helpers) + `test-e2e.mjs` (scenarios). Run: `node /tmp/review-e2e/test-e2e.mjs`. Assert on observable outcomes (git state, model state, event count, file contents). Never inspect prompt internals.
+**Automated** (`/tmp/loop-e2e/`): `harness.mjs` (shared helpers) + `test-e2e.mjs` (scenarios). Run: `node /tmp/loop-e2e/test-e2e.mjs`. Assert on observable outcomes (git state, model state, event count, file contents). Never inspect prompt internals.
 
-**Manual** (TUI only): ESC/steer, resume after reload, `/review:cfg` menus. See `docs/E2E_TESTS.md`.
+**Manual** (TUI only): ESC/steer, resume after reload, `/loop:cfg` menus. See `docs/E2E_TESTS.md`.

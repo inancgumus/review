@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import reviewExtension from "../index.ts";
+import loopExtension from "../index.ts";
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -129,7 +129,7 @@ function createHarness() {
 		registerMessageRenderer() {},
 	};
 
-	reviewExtension(pi as any);
+	loopExtension(pi as any);
 
 	function pushAssistant(text: string): void {
 		const assistantId = nextId("assistant");
@@ -143,9 +143,9 @@ function createHarness() {
 	}
 
 	async function start(): Promise<void> {
-		const review = commands.get("review");
-		assert.ok(review, "review command registered");
-		await review("check auth", commandCtx);
+		const loop = commands.get("loop");
+		assert.ok(loop, "loop command registered");
+		await loop("check auth", commandCtx);
 	}
 
 	async function agentEnd(): Promise<void> {
@@ -158,53 +158,53 @@ function createHarness() {
 	return { prompts, start, pushAssistant, agentEnd };
 }
 
-const reviewerText = [
-	"## Reviewer notes",
+const overseerText = [
+	"## Overseer notes",
 	"",
 	"- add a zero-divisor guard",
 	"",
 	"**VERDICT:** CHANGES_REQUESTED",
 ].join("\n");
 
-const fixerText = [
-	"### Fixer summary",
+const workhorseText = [
+	"## Workhorse summary",
 	"",
 	"Added the guard and a regression test.",
 	"",
 	"FIXES_COMPLETE",
 ].join("\n");
 
-test("fresh mode resets fixer and next reviewer to the same base context", async () => {
+test("fresh mode resets workhorse and next overseer to the same base context", async () => {
 	const h = createHarness();
 	await h.start();
 
-	assert.equal(h.prompts.length, 1, "round 1 review prompt sent");
+	assert.equal(h.prompts.length, 1, "round 1 overseer prompt sent");
 	const baseContext = h.prompts[0]?.contextLeaf ?? null;
 
-	h.pushAssistant(reviewerText);
+	h.pushAssistant(overseerText);
 	await h.agentEnd();
 
 	assert.equal(
-		h.prompts.filter(p => p.content.includes("/review:_step")).length,
+		h.prompts.filter(p => p.content.includes("/loop:_step")).length,
 		0,
 		"no internal slash-command should leak into visible prompts",
 	);
-	assert.equal(h.prompts.length, 2, "fix prompt sent after review verdict");
-	assert.match(h.prompts[1]?.content ?? "", /Code Review Feedback — Round 1/, "sent the fix prompt");
+	assert.equal(h.prompts.length, 2, "workhorse prompt sent after overseer verdict");
+	assert.match(h.prompts[1]?.content ?? "", /Overseer Feedback — Round 1/, "sent the fix prompt");
 	assert.equal(
 		h.prompts[1]?.contextLeaf ?? null,
 		baseContext,
-		"fixer should run from the same clean base context as round 1 reviewer",
+		"workhorse should run from same base context as round 1 overseer",
 	);
 
-	h.pushAssistant(fixerText);
+	h.pushAssistant(workhorseText);
 	await h.agentEnd();
 
-	assert.equal(h.prompts.length, 3, "round 2 review prompt sent after fixes");
-	assert.match(h.prompts[2]?.content ?? "", /You are a code reviewer/, "sent the full fresh review prompt");
+	assert.equal(h.prompts.length, 3, "round 2 overseer prompt sent after workhorse");
+	assert.match(h.prompts[2]?.content ?? "", /You are a code overseer/, "sent the full fresh review prompt");
 	assert.equal(
 		h.prompts[2]?.contextLeaf ?? null,
 		baseContext,
-		"fresh round 2 reviewer should also run from the same clean base context",
+		"fresh round 2 overseer should also run from same base context",
 	);
 });

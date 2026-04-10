@@ -46,7 +46,7 @@ function safeDirEntries(dirPath: string): fs.Dirent[] {
 	catch { return []; }
 }
 
-/** Parse `/review` args into focus text and resolved @path references. */
+/** Parse `/loop` args into focus text and resolved @path references. */
 export function parseArgs(args: string, cwd: string): { focus: string; contextPaths: string[] } {
 	const contextPaths: string[] = [];
 	const remaining: string[] = [];
@@ -65,7 +65,7 @@ export function parseArgs(args: string, cwd: string): { focus: string; contextPa
 	};
 }
 
-/** Re-read @path files from disk. Called before each reviewer/fixer prompt. */
+/** Re-read @path files from disk. Called before each overseer/workhorse prompt. */
 export function expandContextPaths(paths: string[]): string {
 	if (paths.length === 0) return "";
 	const parts: string[] = [];

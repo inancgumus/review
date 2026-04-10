@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import reviewExtension from "../index.ts";
+import loopExtension from "../index.ts";
 
 function wait(ms = 200): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -24,7 +24,7 @@ function createHarness() {
 			events.set(name, handler);
 		},
 		sendMessage(message: any) {
-			if (message.customType === "review-log") logMessages.push(String(message.content));
+			if (message.customType === "loop-log") logMessages.push(String(message.content));
 		},
 		sendUserMessage(content: string) {
 			userMessages.push(String(content));
@@ -64,7 +64,7 @@ function createHarness() {
 		},
 	};
 
-	reviewExtension(pi as any);
+	loopExtension(pi as any);
 
 	function pushAssistant(text: string): void {
 		seq++;
@@ -78,9 +78,9 @@ function createHarness() {
 	}
 
 	async function start(args = "check auth"): Promise<void> {
-		const review = commands.get("review");
-		assert.ok(review);
-		await review(args, ctx);
+		const loop = commands.get("loop");
+		assert.ok(loop);
+		await loop(args, ctx);
 	}
 
 	async function fireAgentEnd(): Promise<void> {
@@ -93,11 +93,11 @@ function createHarness() {
 	return { commands, events, ctx, userMessages, logMessages, pushAssistant, start, fireAgentEnd };
 }
 
-test("fixer output is captured using text from agent_end, not re-fetched", async () => {
+test("workhorse output is captured using text from agent_end, not re-fetched", async () => {
 	const h = createHarness();
 	await h.start();
 
-	// Reviewer says CHANGES_REQUESTED
+	// Overseer says CHANGES_REQUESTED
 	h.pushAssistant("Issue found\n\nVERDICT: CHANGES_REQUESTED");
 	await h.fireAgentEnd();
 
@@ -116,16 +116,16 @@ test("fixer output is captured using text from agent_end, not re-fetched", async
 	h.ctx.sessionManager.getBranch = originalGetBranch;
 
 	// The fixer summary should still be captured from the text at agent_end time
-	const fixerLogs = h.logMessages.filter(m => m.includes("Fixes applied"));
-	assert.ok(fixerLogs.length > 0, "fixer output was captured despite branch change");
-	assert.ok(fixerLogs[0].includes("Fixed the issue"), "fixer summary contains the actual text");
+	const workhorseLogs = h.logMessages.filter(m => m.includes("Workhorse done"));
+	assert.ok(workhorseLogs.length > 0, "workhorse output was captured despite branch change");
+	assert.ok(workhorseLogs[0].includes("Fixed the issue"), "workhorse summary contains the actual text");
 });
 
-test("fixer with empty last assistant text still triggers re-prompt", async () => {
+test("workhorse with empty last assistant text still triggers re-prompt", async () => {
 	const h = createHarness();
 	await h.start();
 
-	// Reviewer says CHANGES_REQUESTED
+	// Overseer says CHANGES_REQUESTED
 	h.pushAssistant("Issue found\n\nVERDICT: CHANGES_REQUESTED");
 	await h.fireAgentEnd();
 

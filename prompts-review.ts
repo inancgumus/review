@@ -1,20 +1,20 @@
 import { expandContextPaths } from "./context.js";
 import { sanitize } from "./session.js";
-import type { PromptSet, ReviewPromptParams } from "./types.js";
+import type { PromptSet, OverseerPromptParams } from "./types.js";
 
 export const reviewPrompts: PromptSet = {
-	buildReviewPrompt: reviewReviewPrompt,
-	buildFixPrompt: reviewFixPrompt,
+	buildOverseerPrompt: reviewOverseerPrompt,
+	buildWorkhorsePrompt: reviewWorkhorsePrompt,
 };
 
-function reviewReviewPrompt(p: ReviewPromptParams): string {
+function reviewOverseerPrompt(p: OverseerPromptParams): string {
 	if (p.round > 1 && p.reviewMode === "incremental") return reviewIncrementalPrompt(p.round);
 	return reviewFullPrompt(p);
 }
 
 function reviewIncrementalPrompt(round: number): string {
 	return [
-		`Re-review round ${round}. The fixer addressed your previous feedback (see the summary above).`,
+		`Re-review round ${round}. The workhorse addressed your previous feedback (see the summary above).`,
 		"Verify the fixes are correct by reading the changed files and running git commands.",
 		"If the author disagreed with a point and explained why, accept it unless it's objectively wrong.",
 		"Also check for any new issues introduced by the fixes.",
@@ -25,9 +25,9 @@ function reviewIncrementalPrompt(round: number): string {
 	].join("\n");
 }
 
-function reviewFullPrompt(p: ReviewPromptParams): string {
+function reviewFullPrompt(p: OverseerPromptParams): string {
 	const parts = [
-		`You are a code reviewer. Review the code changes in this repository.`,
+		`You are a code overseer. Review the code changes in this repository.`,
 		`Focus: ${p.focus}`,
 		"",
 		"Review the code by reading files and running git commands.",
@@ -35,7 +35,7 @@ function reviewFullPrompt(p: ReviewPromptParams): string {
 		"Do NOT stop after the first issue — keep checking until you are confident there are no other blocking issues in scope.",
 		"If the request spans multiple commits, identify every commit that needs fixing, not just the latest one.",
 		"RULES:",
-		"- You are a REVIEWER. Do NOT modify, edit, or write any files.",
+		"- You are the OVERSEER. Do NOT modify, edit, or write any files.",
 		"- Only use read and bash. Run git/grep/find/ls via bash.",
 		"- Review only the requested target. Ignore unrelated files unless directly relevant.",
 		"",
@@ -55,13 +55,13 @@ function reviewFullPrompt(p: ReviewPromptParams): string {
 	const ctx = expandContextPaths(p.contextPaths);
 	if (ctx) parts.push(ctx);
 
-	if (p.round > 1 && p.fixerSummaries.length > 0) {
+	if (p.round > 1 && p.workhorseSummaries.length > 0) {
 		parts.push(
 			"",
 			"## Previous rounds",
-			"Below is the fixer's SELF-REPORTED summary. Do NOT trust it. The fixer may have missed things, introduced new bugs, or only partially fixed issues.",
+			"Below is the workhorse's SELF-REPORTED summary. Do NOT trust it. The workhorse may have missed things, introduced new bugs, or only partially fixed issues.",
 			"",
-			...p.fixerSummaries,
+			...p.workhorseSummaries,
 			"",
 			"## YOUR JOB THIS ROUND",
 			"You MUST read the actual source files and run git commands before giving a verdict.",
@@ -73,23 +73,23 @@ function reviewFullPrompt(p: ReviewPromptParams): string {
 	return parts.join("\n");
 }
 
-function reviewFixPrompt(reviewText: string, contextPaths: string[], round: number): string {
-	const cleaned = sanitize(reviewText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
+function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number): string {
+	const cleaned = sanitize(overseerText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
 	return [
-		`## Code Review Feedback — Round ${round}`,
+		`## Overseer Feedback — Round ${round}`,
 		"",
 		cleaned,
 		"",
 		"---",
 		"",
 		"Address every blocking issue listed above:",
-		"- **Fix it**, or **explain why you disagree** (the reviewer will accept reasonable justifications).",
+		"- **Fix it**, or **explain why you disagree** (the overseer will accept reasonable justifications).",
 		"- Nitpicks are optional — fix them if you agree, skip if you don't.",
 		"",
 		"### Git rules (mandatory)",
 		"- If changes are **uncommitted** (unstaged/staged): leave them uncommitted. Do not commit.",
 		"- If changes span **a single commit**: `git add -A && git commit --amend --no-edit`",
-		"- If changes span **multiple commits** (the reviewer tagged issues with commit SHAs):",
+		"- If changes span **multiple commits** (the overseer tagged issues with commit SHAs):",
 		"  1. Fix each issue, then stage ONLY its files: `git add <files>`",
 		"  2. Create a fixup commit targeting the right SHA: `git commit --fixup=<sha>`",
 		"  3. **YOU MUST** run the autosquash rebase after ALL fixup commits are created:",
@@ -98,7 +98,7 @@ function reviewFixPrompt(reviewText: string, contextPaths: string[], round: numb
 		"     ```",
 		"     This is NOT optional. If you skip it, the fixups remain as separate commits.",
 		"  If the rebase has conflicts, resolve them and `git rebase --continue`.",
-		"- If the reviewer asked to **split a commit**:",
+		"- If the overseer asked to **split a commit**:",
 		"  1. `GIT_SEQUENCE_EDITOR=\"sed -i '' 's/^pick \\(<sha>\\)/edit \\1/'\" git rebase -i <parent>`",
 		"  2. `git reset HEAD~` to unstage everything",
 		"  3. Selectively `git add` and `git commit` each logical piece",
@@ -111,7 +111,7 @@ function reviewFixPrompt(reviewText: string, contextPaths: string[], round: numb
 		"- NEVER run bare `git rebase -i` — it opens vim/vi and you WILL get stuck.",
 		"- Same applies to `git commit` without `-m` or `--no-edit` — always pass a message flag.",
 		"",
-		"IMPORTANT: Do NOT output any VERDICT lines. You are the fixer, not the reviewer.",
+		"IMPORTANT: Do NOT output any VERDICT lines. You are the workhorse, not the overseer.",
 		"",
 		"When you have addressed ALL blocking issues (fixed or explained why you disagree),",
 		"end your response with exactly:",
