@@ -84,12 +84,12 @@ Round N
 
 **Exec** (`/loop:exec`) — Plan execution loop. The orchestrator reads a plan (passed as `@path` context) and the codebase, then tells the workhorse what to build one step at a time. If a step is incomplete, the orchestrator reassigns it. The plan can be any format — the orchestrator LLM reads it and decides what to drip-feed.
 
-Both modes share the same loop machinery, config, review modes, and log viewer.
+Both modes share the same loop machinery, config, execution modes, and log viewer.
 
-### Two review modes
+### Two execution modes
 
-- **Fresh** (default) — The overseer/orchestrator starts each round from scratch. It re-reads files from disk, gets full rules, and sees a summary of prior work. Prior rounds do not leak. Context cost stays constant.
-- **Incremental** — The overseer/orchestrator keeps its full context. Round 2+ gets a short re-check prompt. Cheaper, but risks tunnel vision.
+- **Fresh** (default) — The overseer starts each round from scratch. It re-reads files from disk, gets full rules, and sees a summary of prior work. Prior rounds do not leak. Context cost stays constant.
+- **Incremental** — The overseer keeps its full context. Round 2+ gets a short re-check prompt. Cheaper, but risks tunnel vision.
 
 Set via `/loop:cfg` or the `loop` section in `~/.pi/agent/settings.json`.
 
