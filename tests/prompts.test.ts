@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { promptSets } from "../prompts.ts";
 
 test("exec orchestrator prompt includes orchestrator role and drip-feed instruction", () => {
@@ -92,6 +95,43 @@ test("incremental review round 2 without unchanged commits has no warning", () =
 	});
 
 	assert.doesNotMatch(prompt, /unchanged/i, "no warning when all commits changed");
+});
+
+test("incremental review round 2 includes changed context files", () => {
+	const dir = mkdtempSync(join(tmpdir(), "prompt-ctx-"));
+	try {
+		const file = join(dir, "auth.go");
+		writeFileSync(file, "func auth() { fixed }");
+
+		const prompt = promptSets.review.buildOverseerPrompt({
+			focus: "check auth",
+			round: 2,
+			reviewMode: "incremental",
+			contextPaths: [],
+			workhorseSummaries: [],
+			unchangedCommits: [],
+			changedContextPaths: [file],
+		});
+
+		assert.match(prompt, /Updated context files/i, "has context header");
+		assert.match(prompt, /func auth/, "includes file contents");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("incremental review round 2 excludes context when no files changed", () => {
+	const prompt = promptSets.review.buildOverseerPrompt({
+		focus: "check auth",
+		round: 2,
+		reviewMode: "incremental",
+		contextPaths: ["/tmp/test/auth.go"],
+		workhorseSummaries: [],
+		unchangedCommits: [],
+		changedContextPaths: [],
+	});
+
+	assert.doesNotMatch(prompt, /Context files/i, "no context section when nothing changed");
 });
 
 test("fresh review round 2 does NOT include unchanged commits warning", () => {

@@ -14,7 +14,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { LoopMode, LoopState, ReviewMode } from "./types.js";
 import { newState } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
-import { parseArgs } from "./context.js";
+import { parseArgs, snapshotContextHashes, changedContextPaths as findChangedContextPaths } from "./context.js";
 import { promptSets } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
@@ -142,6 +142,7 @@ export default function (pi: ExtensionAPI) {
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
 			contextPaths: state.contextPaths, workhorseSummaries: state.workhorseSummaries,
 			unchangedCommits: state.unchangedCommits,
+			changedContextPaths: state.changedContextPaths,
 		}));
 	}
 
@@ -155,7 +156,13 @@ export default function (pi: ExtensionAPI) {
 		state.snapshotBase = "";
 		state.taggedSubjects = [];
 		state.unchangedCommits = [];
+		state.contextHashes = null;
+		state.changedContextPaths = [];
 		if (state.mode === "review" && state.reviewMode === "incremental") {
+			// Snapshot @path content hashes before workhorse modifies files
+			if (state.contextPaths.length > 0) {
+				state.contextHashes = snapshotContextHashes(state.contextPaths);
+			}
 			const taggedSHAs = extractTaggedSHAs(overseerText);
 			if (taggedSHAs.length > 1) {
 				const base = findSnapshotBase(ctx.cwd, taggedSHAs);
@@ -183,6 +190,15 @@ export default function (pi: ExtensionAPI) {
 		state.workhorseSummaries.push(summaryText);
 		recordWorkhorse(state.round, summaryText);
 		log(`🔧 Workhorse done\n${summary}`);
+
+		// Detect changed @path files
+		if (state.contextHashes && state.contextPaths.length > 0) {
+			state.changedContextPaths = findChangedContextPaths(state.contextPaths, state.contextHashes);
+			if (state.changedContextPaths.length > 0) {
+				log(`📄 Changed @paths: ${state.changedContextPaths.length}/${state.contextPaths.length}`);
+			}
+			state.contextHashes = null;
+		}
 
 		// Compare patch-ids to detect unchanged commits
 		const cwd = loopCommandCtx?.cwd || eventCtx?.cwd;

@@ -8,11 +8,11 @@ export const reviewPrompts: PromptSet = {
 };
 
 function reviewOverseerPrompt(p: OverseerPromptParams): string {
-	if (p.round > 1 && p.reviewMode === "incremental") return reviewIncrementalPrompt(p.round, p.unchangedCommits ?? []);
+	if (p.round > 1 && p.reviewMode === "incremental") return reviewIncrementalPrompt(p.round, p.unchangedCommits ?? [], p.changedContextPaths ?? []);
 	return reviewFullPrompt(p);
 }
 
-function reviewIncrementalPrompt(round: number, unchangedCommits: string[]): string {
+function reviewIncrementalPrompt(round: number, unchangedCommits: string[], changedPaths: string[]): string {
 	const parts = [
 		`Re-review round ${round}. The workhorse addressed your previous feedback (see the summary above).`,
 		"Verify the fixes are correct by reading the changed files and running git commands.",
@@ -32,6 +32,9 @@ function reviewIncrementalPrompt(round: number, unchangedCommits: string[]): str
 			"Re-request fixes for each unchanged commit specifically.",
 		);
 	}
+
+	const ctx = changedPaths.length > 0 ? expandContextPaths(changedPaths) : "";
+	if (ctx) parts.push("", "## Updated context files", "The following @path files were modified by the workhorse since your last review:", ctx);
 
 	parts.push(
 		"",

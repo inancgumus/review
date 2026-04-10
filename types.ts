@@ -22,6 +22,7 @@ export interface OverseerPromptParams {
 	contextPaths: string[];
 	workhorseSummaries: string[];
 	unchangedCommits: string[];
+	changedContextPaths: string[];
 }
 
 export interface PromptSet {
@@ -57,6 +58,8 @@ export interface LoopState {
 	snapshotBase: string;
 	taggedSubjects: string[];
 	unchangedCommits: string[];
+	contextHashes: Map<string, string> | null;
+	changedContextPaths: string[];
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -79,6 +82,8 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		snapshotBase: "",
 		taggedSubjects: [],
 		unchangedCommits: [],
+		contextHashes: null,
+		changedContextPaths: [],
 		...overrides,
 	};
 }
