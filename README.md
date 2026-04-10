@@ -160,7 +160,7 @@ Press **ESC** while either agent works. Type your guidance. The agent continues 
 Symlink the extension into your global pi extensions directory:
 
 ```bash
-git clone https://github.com/inancgumus/loop ~/.pi/agent/extensions/loop
+git clone https://github.com/inancgumus/pi-loop ~/.pi/agent/extensions/loop
 ```
 
 Pick one location — not both. Loading from two locations breaks command routing.
