@@ -21,6 +21,7 @@ export interface OverseerPromptParams {
 	reviewMode: ReviewMode;
 	contextPaths: string[];
 	workhorseSummaries: string[];
+	unchangedCommits: string[];
 }
 
 export interface PromptSet {
@@ -52,6 +53,10 @@ export interface LoopState {
 	anchorEntryId: string | null;
 	workhorseSummaries: string[];
 	roundResults: RoundResult[];
+	patchSnapshot: Map<string, string> | null;
+	snapshotBase: string;
+	taggedSubjects: string[];
+	unchangedCommits: string[];
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -70,6 +75,10 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		anchorEntryId: null,
 		workhorseSummaries: [],
 		roundResults: [],
+		patchSnapshot: null,
+		snapshotBase: "",
+		taggedSubjects: [],
+		unchangedCommits: [],
 		...overrides,
 	};
 }

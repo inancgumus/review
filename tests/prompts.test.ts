@@ -66,6 +66,47 @@ test("review prompt set still works unchanged", () => {
 	assert.match(prompt, /VERDICT: APPROVED/, "includes verdict markers");
 });
 
+test("incremental review round 2 includes unchanged commits warning", () => {
+	const prompt = promptSets.review.buildOverseerPrompt({
+		focus: "check auth",
+		round: 2,
+		reviewMode: "incremental",
+		contextPaths: [],
+		workhorseSummaries: [],
+		unchangedCommits: ["Add auth module", "Add request handler"],
+	});
+
+	assert.match(prompt, /Add auth module/, "lists unchanged commit");
+	assert.match(prompt, /Add request handler/, "lists second unchanged commit");
+	assert.match(prompt, /red flag|unchanged|not modified/i, "warns about unchanged commits");
+});
+
+test("incremental review round 2 without unchanged commits has no warning", () => {
+	const prompt = promptSets.review.buildOverseerPrompt({
+		focus: "check auth",
+		round: 2,
+		reviewMode: "incremental",
+		contextPaths: [],
+		workhorseSummaries: [],
+		unchangedCommits: [],
+	});
+
+	assert.doesNotMatch(prompt, /unchanged/i, "no warning when all commits changed");
+});
+
+test("fresh review round 2 does NOT include unchanged commits warning", () => {
+	const prompt = promptSets.review.buildOverseerPrompt({
+		focus: "check auth",
+		round: 2,
+		reviewMode: "fresh",
+		contextPaths: [],
+		workhorseSummaries: ["[Workhorse Round 1] Fixed auth"],
+		unchangedCommits: ["Add auth module"],
+	});
+
+	assert.doesNotMatch(prompt, /unchanged.*commit/i, "fresh mode ignores unchanged commits");
+});
+
 test("review workhorse prompt set still works unchanged", () => {
 	const prompt = promptSets.review.buildWorkhorsePrompt(
 		"Fix the race condition\nVERDICT: CHANGES_REQUESTED",

@@ -20,6 +20,7 @@ import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
+import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
 
 // Block interactive editors during agent turns.
 // GIT_EDITOR/EDITOR/VISUAL → fail with actionable message so the agent retries correctly.
@@ -140,6 +141,7 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
 			contextPaths: state.contextPaths, workhorseSummaries: state.workhorseSummaries,
+			unchangedCommits: state.unchangedCommits,
 		}));
 	}
 
@@ -147,6 +149,25 @@ export default function (pi: ExtensionAPI) {
 		const cfg = loadConfig(ctx.cwd);
 		state.overseerLeafId = ctx.sessionManager.getLeafId();
 		if (!await navigateToAnchor(ctx)) return;
+
+		// Snapshot patch-ids before workhorse runs (incremental review only)
+		state.patchSnapshot = null;
+		state.snapshotBase = "";
+		state.taggedSubjects = [];
+		state.unchangedCommits = [];
+		if (state.mode === "review" && state.reviewMode === "incremental") {
+			const taggedSHAs = extractTaggedSHAs(overseerText);
+			if (taggedSHAs.length > 1) {
+				const base = findSnapshotBase(ctx.cwd, taggedSHAs);
+				if (base) {
+					state.patchSnapshot = snapshotPatchIds(ctx.cwd, base);
+					state.snapshotBase = base;
+					state.taggedSubjects = resolveSubjects(ctx.cwd, taggedSHAs);
+					log(`[Snapshot] ${state.taggedSubjects.length} tagged commits, ${state.patchSnapshot.size} in range`);
+				}
+			}
+		}
+
 		if (!await setAgent(cfg.workhorseModel, cfg.workhorseThinking, ctx)) return;
 
 		state.phase = "fixing";
@@ -162,6 +183,20 @@ export default function (pi: ExtensionAPI) {
 		state.workhorseSummaries.push(summaryText);
 		recordWorkhorse(state.round, summaryText);
 		log(`🔧 Workhorse done\n${summary}`);
+
+		// Compare patch-ids to detect unchanged commits
+		const cwd = loopCommandCtx?.cwd || eventCtx?.cwd;
+		if (state.patchSnapshot && state.snapshotBase && state.taggedSubjects.length > 0 && cwd) {
+			const after = snapshotPatchIds(cwd, state.snapshotBase);
+			state.unchangedCommits = detectUnchanged(state.patchSnapshot, after, state.taggedSubjects);
+			if (state.unchangedCommits.length > 0) {
+				log(`⚠️ Unchanged commits: ${state.unchangedCommits.join(", ")}`);
+			}
+			state.patchSnapshot = null;
+			state.snapshotBase = "";
+			state.taggedSubjects = [];
+		}
+
 		state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}

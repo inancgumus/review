@@ -8,21 +8,39 @@ export const reviewPrompts: PromptSet = {
 };
 
 function reviewOverseerPrompt(p: OverseerPromptParams): string {
-	if (p.round > 1 && p.reviewMode === "incremental") return reviewIncrementalPrompt(p.round);
+	if (p.round > 1 && p.reviewMode === "incremental") return reviewIncrementalPrompt(p.round, p.unchangedCommits ?? []);
 	return reviewFullPrompt(p);
 }
 
-function reviewIncrementalPrompt(round: number): string {
-	return [
+function reviewIncrementalPrompt(round: number, unchangedCommits: string[]): string {
+	const parts = [
 		`Re-review round ${round}. The workhorse addressed your previous feedback (see the summary above).`,
 		"Verify the fixes are correct by reading the changed files and running git commands.",
 		"If the author disagreed with a point and explained why, accept it unless it's objectively wrong.",
 		"Also check for any new issues introduced by the fixes.",
+	];
+
+	if (unchangedCommits.length > 0) {
+		parts.push(
+			"",
+			"## ⚠️ Unchanged commits detected",
+			"The following commits were NOT modified by the workhorse (their patch fingerprint is identical to before):",
+			...unchangedCommits.map(s => `- **${s}**`),
+			"",
+			"This is a red flag — the workhorse likely lumped fixes into the wrong commit.",
+			"If you tagged these commits with issues, the fixes were NOT applied there.",
+			"Re-request fixes for each unchanged commit specifically.",
+		);
+	}
+
+	parts.push(
 		"",
 		"End with exactly one of:",
 		"VERDICT: APPROVED",
 		"VERDICT: CHANGES_REQUESTED",
-	].join("\n");
+	);
+
+	return parts.join("\n");
 }
 
 function reviewFullPrompt(p: OverseerPromptParams): string {
