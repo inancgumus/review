@@ -221,11 +221,21 @@ export default function (pi: ExtensionAPI) {
 			if (result.feedback) return { action: "feedback", feedback: result.feedback };
 			return null;
 		} finally {
-			// Restore original HEAD
+			// Restore original HEAD — critical, workhorse needs to be on the right branch
 			try {
-				if (originalBranch) execSync(`git checkout ${originalBranch} --quiet`, { cwd, timeout: 5000 });
-				else execSync(`git checkout ${originalRef} --detach --quiet`, { cwd, timeout: 5000 });
-			} catch {
+				if (originalBranch) {
+					execSync(`git checkout ${originalBranch} --quiet`, { cwd, timeout: 5000 });
+				} else {
+					execSync(`git checkout ${originalRef} --detach --quiet`, { cwd, timeout: 5000 });
+				}
+				// Verify restore succeeded
+				const currentHead = execSync("git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+				const expectedHead = execSync(`git rev-parse ${originalBranch || originalRef}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+				if (currentHead !== expectedHead) {
+					log(`⚠️ HEAD restore mismatch — forcing checkout`);
+					execSync(`git checkout ${originalBranch || originalRef} --force --quiet`, { cwd, timeout: 5000 });
+				}
+			} catch (e: any) {
 				log(`⚠️ Could not restore HEAD — run: git checkout ${originalBranch || originalRef}`);
 			}
 		}
@@ -375,26 +385,32 @@ export default function (pi: ExtensionAPI) {
 		const cwd = useCtx?.cwd;
 		if (!cwd) return;
 
-		// Re-derive commit list after potential rebase
 		if (state.manualBase) {
+			const oldCount = state.commitList.length;
 			const range = `${state.manualBase}..HEAD`;
 			const { newList, remap, lost } = remapAfterRebase(cwd, range, state.patchIdMap);
 
 			const oldSha = state.commitList[state.currentCommitIdx];
 			state.commitList = newList;
 
-			// Remap current commit index
+			// Remap current commit index via patch-id match
 			const newSha = remap.get(oldSha);
 			if (newSha) {
 				const newIdx = newList.indexOf(newSha);
 				if (newIdx >= 0) state.currentCommitIdx = newIdx;
 			}
+			// Patch-id changed but count is same → commit was modified (expected after fix).
+			// Keep same index — it's the same logical commit with new content.
 
-			// Rebuild patchIdMap
+			// Clamp index in case commits were removed
+			if (state.currentCommitIdx >= newList.length) {
+				state.currentCommitIdx = Math.max(0, newList.length - 1);
+			}
+
 			state.patchIdMap = buildPatchIdMap(cwd, newList);
 
-			// Split/squash: original commit's patch-id vanished
-			if (lost.length > 0) {
+			// Only show split/squash picker when commit count actually changed
+			if (lost.length > 0 && newList.length !== oldCount) {
 				log(`⚠️ ${lost.length} commit(s) were split or squashed`);
 				const items = newList.map((s, i) => {
 					const subj = getCommitSubject(cwd, s);
