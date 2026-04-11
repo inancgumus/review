@@ -44,9 +44,45 @@ function restoreEditorEnv(): void {
 	savedEnv = {};
 }
 
+function formatDuration(ms: number): string {
+	const s = Math.floor(ms / 1000);
+	const m = Math.floor(s / 60);
+	const h = Math.floor(m / 60);
+	if (h > 0) return `${h}h ${m % 60}m`;
+	if (m > 0) return `${m}m ${s % 60}s`;
+	return `${s}s`;
+}
+
+function formatTime(ts: number): string {
+	return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
 export default function (pi: ExtensionAPI) {
 	let state: LoopState = newState();
 	let loopCommandCtx: any | null = null;
+	let statusPrefix = "";
+	let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+	function updateStatus(ctx: any): void {
+		if (state.phase === "idle" || !statusPrefix) return;
+		const now = Date.now();
+		let status = statusPrefix;
+		if (state.roundStartedAt) status += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
+		if (state.loopStartedAt) status += ` · ⏱ Total: ${formatDuration(now - state.loopStartedAt)}`;
+		ctx.ui.setStatus("loop", status);
+	}
+
+	function startStatusTimer(ctx: any): void {
+		stopStatusTimer();
+		updateStatus(ctx);
+		statusTimer = setInterval(() => updateStatus(ctx), 1000);
+		if (statusTimer.unref) statusTimer.unref();
+	}
+
+	function stopStatusTimer(): void {
+		if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+		statusPrefix = "";
+	}
 
 	function deferIf(phase: string, fn: () => void): void {
 		setTimeout(() => { if (state.phase === phase) fn(); }, 100);
@@ -134,9 +170,11 @@ export default function (pi: ExtensionAPI) {
 		if (!await setAgent(cfg.overseerModel, cfg.overseerThinking, ctx)) return;
 
 		state.phase = "reviewing";
+		state.roundStartedAt = Date.now();
 		state.overseerLeafId = null;
-		ctx.ui.setStatus("loop", `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.overseerModel} reviewing`);
-		log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode}`);
+		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.overseerModel} reviewing`;
+		updateStatus(ctx);
+		log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
@@ -178,7 +216,10 @@ export default function (pi: ExtensionAPI) {
 		if (!await setAgent(cfg.workhorseModel, cfg.workhorseThinking, ctx)) return;
 
 		state.phase = "fixing";
-		ctx.ui.setStatus("loop", `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.workhorseModel} fixing`);
+		const rr = state.roundResults.find(r => r.round === state.round);
+		if (rr) rr.workhorseStartedAt = Date.now();
+		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.workhorseModel} fixing`;
+		updateStatus(ctx);
 		log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
 		pi.sendUserMessage(prompts.buildWorkhorsePrompt(overseerText, state.contextPaths, state.round));
@@ -213,12 +254,18 @@ export default function (pi: ExtensionAPI) {
 			state.taggedSubjects = [];
 		}
 
+		const now = Date.now();
+		const rr = state.roundResults.find(r => r.round === state.round);
+		if (rr) rr.endedAt = now;
+		if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
+
 		state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
+		stopStatusTimer();
 		state.phase = "idle";
 		state.overseerLeafId = null;
 		loopCommandCtx = null;
@@ -231,6 +278,10 @@ export default function (pi: ExtensionAPI) {
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking);
 		log(`Loop ended. Restored model: ${state.originalModelStr} · thinking: ${state.originalThinking}`);
+		if (state.loopStartedAt) {
+			const now = Date.now();
+			log(`⏱ Total: ${formatDuration(now - state.loopStartedAt)} (${formatTime(state.loopStartedAt)} → ${formatTime(now)})`);
+		}
 	}
 
 	// ── agent_end ───────────────────────────────────────
@@ -253,7 +304,11 @@ export default function (pi: ExtensionAPI) {
 
 		if (verdict === "approved") {
 			recordOverseer(state.round, "approved", text);
+			const now = Date.now();
+			const rr = state.roundResults.find(r => r.round === state.round);
+			if (rr) rr.endedAt = now;
 			log(`✅ APPROVED`);
+			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 			deferIf("reviewing", () => { ctx.ui.notify(`✅ Approved after ${state.round} round(s)`, "success"); stopLoop(ctx); });
 			return;
 		}
@@ -283,7 +338,7 @@ export default function (pi: ExtensionAPI) {
 	function recordOverseer(round: number, verdict: "approved" | "changes_requested", text: string): void {
 		const r = state.roundResults.find(r => r.round === round);
 		if (r) { r.verdict = verdict; r.overseerText = text; }
-		else state.roundResults.push({ round, verdict, overseerText: text, workhorseSummary: "" });
+		else state.roundResults.push({ round, verdict, overseerText: text, workhorseSummary: "", startedAt: state.roundStartedAt, endedAt: 0, workhorseStartedAt: 0 });
 	}
 
 	function recordWorkhorse(round: number, summary: string): void {
@@ -303,10 +358,12 @@ export default function (pi: ExtensionAPI) {
 			mode, round: 1, focus, initialRequest: trimmedArgs || "(no focus specified)", contextPaths,
 			maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
+			loopStartedAt: Date.now(),
 		});
-		log(`📝 Request\n${state.initialRequest}`);
+		log(`📝 Request · Started: ${formatTime(state.loopStartedAt)}\n${state.initialRequest}`);
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
+		startStatusTimer(ctx);
 		ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
 		await ctx.waitForIdle();
 		await startOverseer(ctx);
@@ -340,8 +397,10 @@ export default function (pi: ExtensionAPI) {
 				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 				overseerLeafId: recovered.overseerLeafId,
 				anchorEntryId: anchor?.id ?? null,
+				loopStartedAt: Date.now(),
 			});
 			blockInteractiveEditors();
+			startStatusTimer(ctx);
 			ctx.ui.notify(`Resuming round ${recovered.round} (${recovered.phase} phase)`, "info");
 			await ctx.waitForIdle();
 			if (recovered.phase === "workhorse" && recovered.lastOverseerText) await startWorkhorse(recovered.lastOverseerText, ctx);
@@ -377,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Browse overseer + workhorse logs in a modal viewer",
 		handler: async (_args, ctx) => {
 			if (state.roundResults.length === 0 && !state.initialRequest) { ctx.ui.notify("No loop rounds recorded yet.", "info"); return; }
-			await showLog(state.initialRequest, state.roundResults, ctx);
+			await showLog(state.initialRequest, state.roundResults, ctx, state.loopStartedAt);
 		},
 	});
 
@@ -550,18 +609,31 @@ export default function (pi: ExtensionAPI) {
 				},
 			];
 
-			// Feed through the real state machinery
-			state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go" });
-			for (const r of rounds) {
+			// Feed through the real state machinery with fake timing
+			const now = Date.now();
+			const roundDurations = [18 * 60000, 12 * 60000, 7 * 60000]; // 18m, 12m, 7m
+			let elapsed = 0;
+			for (const d of roundDurations) elapsed += d;
+			state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go", loopStartedAt: now - elapsed });
+			let cursor = now - elapsed;
+			for (let i = 0; i < rounds.length; i++) {
+				const r = rounds[i];
 				state.round++;
+				state.roundStartedAt = cursor;
 				const verdict = matchVerdict(r.overseer);
 				if (verdict) recordOverseer(state.round, verdict, r.overseer);
 				if (r.workhorse) {
 					const summary = `[Workhorse Round ${state.round}] ${sanitize(stripVerdict(r.workhorse))}`;
 					recordWorkhorse(state.round, summary);
 				}
+				const rr = state.roundResults.find(rr => rr.round === state.round);
+				if (rr) {
+					if (r.workhorse) rr.workhorseStartedAt = cursor + Math.floor(roundDurations[i] * 0.4);
+					rr.endedAt = cursor + roundDurations[i];
+				}
+				cursor += roundDurations[i];
 			}
-			await showLog(state.initialRequest, state.roundResults, ctx);
+			await showLog(state.initialRequest, state.roundResults, ctx, state.loopStartedAt);
 		},
 	});
 

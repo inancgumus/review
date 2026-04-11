@@ -37,6 +37,9 @@ export interface RoundResult {
 	verdict: Verdict;
 	overseerText: string;
 	workhorseSummary: string;
+	startedAt: number;
+	endedAt: number;
+	workhorseStartedAt: number;
 }
 
 export interface LoopState {
@@ -60,6 +63,8 @@ export interface LoopState {
 	unchangedCommits: string[];
 	contextHashes: Map<string, string> | null;
 	changedContextPaths: string[];
+	loopStartedAt: number;
+	roundStartedAt: number;
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -84,6 +89,8 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		unchangedCommits: [],
 		contextHashes: null,
 		changedContextPaths: [],
+		loopStartedAt: 0,
+		roundStartedAt: 0,
 		...overrides,
 	};
 }

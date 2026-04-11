@@ -1,12 +1,25 @@
 import type { RoundResult } from "./types.js";
 import { loadPiAgent, loadTui } from "./tui-runtime.js";
 
+function formatDuration(ms: number): string {
+	var s = Math.floor(ms / 1000);
+	var m = Math.floor(s / 60);
+	var h = Math.floor(m / 60);
+	if (h > 0) return h + "h " + (m % 60) + "m";
+	if (m > 0) return m + "m " + (s % 60) + "s";
+	return s + "s";
+}
+
+function formatTime(ts: number): string {
+	return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
 const MIN_WIDTH = 60;
 const MAX_WIDTH = 120;
 const LIST_WIDTH = 28;
 
 type ListEntry =
-	| { type: "request"; text: string }
+	| { type: "request"; text: string; startedAt: number }
 	| { type: "overseer"; round: number; result: RoundResult }
 	| { type: "workhorse"; round: number; result: RoundResult };
 
@@ -54,8 +67,8 @@ function cleanWorkhorseText(text: string): string {
 	return text.replace(/^\[Workhorse Round \d+\]\s*/i, "").trim();
 }
 
-function buildEntries(initialRequest: string, roundResults: RoundResult[]): ListEntry[] {
-	var entries: ListEntry[] = [{ type: "request", text: initialRequest }];
+function buildEntries(initialRequest: string, roundResults: RoundResult[], loopStartedAt: number): ListEntry[] {
+	var entries: ListEntry[] = [{ type: "request", text: initialRequest, startedAt: loopStartedAt }];
 	for (var i = 0; i < roundResults.length; i++) {
 		var result = roundResults[i];
 		entries.push({ type: "overseer", round: result.round, result: result });
@@ -68,13 +81,27 @@ function buildEntries(initialRequest: string, roundResults: RoundResult[]): List
 
 function buildEntryMarkdown(entry: ListEntry): string {
 	if (entry.type === "request") {
-		return "# User request\n\n" + (entry.text ? ("`" + entry.text + "`") : "_No user request recorded._");
+		var started = "";
+		if (entry.startedAt) {
+			started = "\n\n**Started:** " + formatTime(entry.startedAt);
+		}
+		return "# User request" + started + "\n\n" + (entry.text ? ("`" + entry.text + "`") : "_No user request recorded._");
 	}
 	if (entry.type === "overseer") {
-		return "# Round " + entry.round + ": Overseer\n\n**Verdict:** " + verdictLabel(entry.result) + "\n\n" +
+		var timing = "";
+		if (entry.result.startedAt && entry.result.endedAt) {
+			timing = "\n\n\u23f1 " + formatDuration(entry.result.endedAt - entry.result.startedAt) +
+				" (" + formatTime(entry.result.startedAt) + " \u2192 " + formatTime(entry.result.endedAt) + ")";
+		}
+		return "# Round " + entry.round + ": Overseer\n\n**Verdict:** " + verdictLabel(entry.result) + timing + "\n\n" +
 			(cleanOverseerText(entry.result.overseerText) || "_No overseer output recorded._");
 	}
-	return "# Round " + entry.round + ": Workhorse\n\n" +
+	var wTiming = "";
+	if (entry.result.workhorseStartedAt && entry.result.endedAt) {
+		wTiming = "\n\n\u23f1 " + formatDuration(entry.result.endedAt - entry.result.workhorseStartedAt) +
+			" (" + formatTime(entry.result.workhorseStartedAt) + " \u2192 " + formatTime(entry.result.endedAt) + ")";
+	}
+	return "# Round " + entry.round + ": Workhorse" + wTiming + "\n\n" +
 		(cleanWorkhorseText(entry.result.workhorseSummary) || "_No workhorse output recorded._");
 }
 
@@ -115,9 +142,17 @@ function buildListLines(
 function headerTitle(entry: ListEntry): string {
 	if (entry.type === "request") return " \ud83d\udcdd Request ";
 	if (entry.type === "overseer") {
-		return " " + verdictIcon(entry.result) + " Round " + entry.round + ": Overseer \u00b7 " + verdictLabel(entry.result) + " ";
+		var dur = "";
+		if (entry.result.startedAt && entry.result.endedAt) {
+			dur = " \u00b7 \u23f1 " + formatDuration(entry.result.endedAt - entry.result.startedAt);
+		}
+		return " " + verdictIcon(entry.result) + " Round " + entry.round + ": Overseer \u00b7 " + verdictLabel(entry.result) + dur + " ";
 	}
-	return " \ud83d\udd27 Round " + entry.round + ": Workhorse ";
+	var wDur = "";
+	if (entry.result.workhorseStartedAt && entry.result.endedAt) {
+		wDur = " \u00b7 \u23f1 " + formatDuration(entry.result.endedAt - entry.result.workhorseStartedAt);
+	}
+	return " \ud83d\udd27 Round " + entry.round + ": Workhorse" + wDur + " ";
 }
 
 function stripAnsi(text: string): string {
@@ -169,7 +204,7 @@ function highlightLine(line: string, query: string, activeOccurrence: number): s
 	return result.join("");
 }
 
-export async function showLog(initialRequest: string, roundResults: RoundResult[], ctx: any): Promise<void> {
+export async function showLog(initialRequest: string, roundResults: RoundResult[], ctx: any, loopStartedAt?: number): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("/loop:log requires interactive mode", "error");
 		return;
@@ -183,7 +218,7 @@ export async function showLog(initialRequest: string, roundResults: RoundResult[
 	var mdTheme = loaded[1].getMarkdownTheme();
 
 	await ctx.ui.custom(function (tui: any, theme: any, _kb: any, done: () => void) {
-		var entries = buildEntries(initialRequest, roundResults);
+		var entries = buildEntries(initialRequest, roundResults, loopStartedAt || 0);
 		var selected = 0;
 		var scroll = 0;
 		var focus: Panel = "list";
@@ -382,7 +417,11 @@ export async function showLog(initialRequest: string, roundResults: RoundResult[
 
 				var rows: string[] = [];
 				var border = function (text: string) { return theme.fg("border", text); };
-				var header = " Loop Log \u00b7 " + roundResults.length + " round(s) ";
+				var totalElapsed = "";
+				if (roundResults.length > 0 && roundResults[0].startedAt && roundResults[roundResults.length - 1].endedAt) {
+					totalElapsed = " \u00b7 " + formatDuration(roundResults[roundResults.length - 1].endedAt - roundResults[0].startedAt);
+				}
+				var header = " Loop Log \u00b7 " + roundResults.length + " round(s)" + totalElapsed + " ";
 				var headerPad = Math.max(0, inner - visibleWidth(header));
 				var title = headerTitle(current);
 				var totalLines = detailLines(width).length;
