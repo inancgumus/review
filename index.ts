@@ -170,39 +170,65 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Plannotator integration ───────────────────────
 
-	function detectPlannotator(): boolean {
+	async function detectPlannotator(): Promise<boolean> {
 		if (state.hasPlannotator !== null) return state.hasPlannotator;
-		try {
-			let handled = false;
-			const unsub = pi.events.on("plannotator:response", () => { handled = true; });
-			pi.events.emit("plannotator:request", { action: "ping" });
-			unsub();
-			state.hasPlannotator = handled;
-		} catch {
-			state.hasPlannotator = false;
-		}
-		return state.hasPlannotator;
+		if (!pi.events?.emit) { state.hasPlannotator = false; return false; }
+		return new Promise<boolean>((resolve) => {
+			let responded = false;
+			pi.events.emit("plannotator:request", {
+				requestId: `detect-${Date.now()}`,
+				action: "review-status",
+				payload: { reviewId: "__loop_detect__" },
+				respond: () => { responded = true; },
+			});
+			setTimeout(() => {
+				state.hasPlannotator = responded;
+				resolve(responded);
+			}, 50);
+		});
 	}
 
-	async function showCommitViaPlannotator(ctx: any, sha: string): Promise<{ action: "approve" | "feedback" | "jump" | "stop"; feedback?: string; jumpIdx?: number } | null> {
-		return new Promise((resolve) => {
-			const unsub = pi.events.on("plannotator:review-result", (data: any) => {
-				unsub();
-				if (!data || typeof data !== "object") { resolve(null); return; }
-				if (data.approved) { resolve({ action: "approve" }); return; }
-				if (data.feedback) { resolve({ action: "feedback", feedback: String(data.feedback) }); return; }
-				resolve(null);
+	async function showCommitViaPlannotator(ctx: any, sha: string): Promise<{ action: "approve" | "feedback" | "stop"; feedback?: string } | null> {
+		const cwd = ctx.cwd;
+
+		// Save current ref so we can restore after plannotator
+		let originalRef: string;
+		try {
+			originalRef = execSync("git symbolic-ref -q HEAD 2>/dev/null || git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+		} catch { return null; }
+		const originalBranch = originalRef.startsWith("refs/heads/") ? originalRef.slice(11) : null;
+
+		// Detach HEAD at the commit so "last-commit" shows its diff
+		try {
+			execSync(`git checkout ${sha} --detach --quiet`, { cwd, timeout: 5000 });
+		} catch { return null; }
+
+		try {
+			const result = await new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
+				pi.events.emit("plannotator:request", {
+					requestId: `loop-review-${Date.now()}`,
+					action: "code-review",
+					payload: { diffType: "last-commit", cwd },
+					respond: (response: any) => {
+						if (response?.status === "handled" && response.result) resolve(response.result);
+						else resolve(null);
+					},
+				});
 			});
 
-			// Ask plannotator to show this commit's diff for review
-			pi.events.emit("plannotator:request", {
-				action: "code-review",
-				sha,
-				cwd: ctx.cwd,
-				commitIndex: state.currentCommitIdx,
-				totalCommits: state.commitList.length,
-			});
-		});
+			if (!result) return null;
+			if (result.approved) return { action: "approve" };
+			if (result.feedback) return { action: "feedback", feedback: result.feedback };
+			return null;
+		} finally {
+			// Restore original HEAD
+			try {
+				if (originalBranch) execSync(`git checkout ${originalBranch} --quiet`, { cwd, timeout: 5000 });
+				else execSync(`git checkout ${originalRef} --detach --quiet`, { cwd, timeout: 5000 });
+			} catch {
+				log(`⚠️ Could not restore HEAD — run: git checkout ${originalBranch || originalRef}`);
+			}
+		}
 	}
 
 	// ── Time tracking ───────────────────────────
@@ -242,7 +268,7 @@ export default function (pi: ExtensionAPI) {
 			showDiff = false;
 
 			// Try plannotator first
-			if (detectPlannotator()) {
+			if (await detectPlannotator()) {
 				const result = await showCommitViaPlannotator(ctx, sha);
 				if (result) {
 					if (result.action === "approve") {
