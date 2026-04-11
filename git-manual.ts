@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000 });
+const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000, stdio: ["pipe", "pipe", "pipe"] as const });
 
 /**
  * If rangeArg is non-empty, return it as-is.

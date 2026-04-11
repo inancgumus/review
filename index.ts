@@ -28,6 +28,8 @@ import { execSync } from "node:child_process";
 // Block interactive editors during agent turns.
 // GIT_EDITOR/EDITOR/VISUAL → fail with actionable message so the agent retries correctly.
 // GIT_SEQUENCE_EDITOR → auto-accept ("true") so `git rebase -i --autosquash` works.
+const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
+
 const EDITOR_BLOCK = `sh -c 'echo "ERROR: Interactive editor blocked during review loop. Use: git commit -m \"msg\" or --no-edit for amends. For rebase, prefix with GIT_SEQUENCE_EDITOR=true or GIT_SEQUENCE_EDITOR=\"sed ...\"" >&2; exit 1'`;
 const EDITOR_VARS = { GIT_EDITOR: EDITOR_BLOCK, EDITOR: EDITOR_BLOCK, VISUAL: EDITOR_BLOCK, GIT_SEQUENCE_EDITOR: "true" };
 let savedEnv: Record<string, string | undefined> = {};
@@ -201,13 +203,13 @@ export default function (pi: ExtensionAPI) {
 		// Save current ref so we can restore after plannotator
 		let originalRef: string;
 		try {
-			originalRef = execSync("git symbolic-ref -q HEAD 2>/dev/null || git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+			originalRef = execSync("git symbolic-ref -q HEAD 2>/dev/null || git rev-parse HEAD", { ...GIT_OPTS, cwd }).trim();
 		} catch { return null; }
 		const originalBranch = originalRef.startsWith("refs/heads/") ? originalRef.slice(11) : null;
 
 		// Detach HEAD at the commit so "last-commit" shows its diff
 		try {
-			execSync(`git checkout ${sha} --detach --quiet`, { cwd, timeout: 5000 });
+			execSync(`git checkout ${sha} --detach --quiet`, { ...GIT_OPTS, cwd });
 		} catch { return null; }
 
 		try {
@@ -231,16 +233,16 @@ export default function (pi: ExtensionAPI) {
 			// Restore original HEAD — critical, workhorse needs to be on the right branch
 			try {
 				if (originalBranch) {
-					execSync(`git checkout ${originalBranch} --quiet`, { cwd, timeout: 5000 });
+					execSync(`git checkout ${originalBranch} --quiet`, { ...GIT_OPTS, cwd });
 				} else {
-					execSync(`git checkout ${originalRef} --detach --quiet`, { cwd, timeout: 5000 });
+					execSync(`git checkout ${originalRef} --detach --quiet`, { ...GIT_OPTS, cwd });
 				}
 				// Verify restore succeeded
-				const currentHead = execSync("git rev-parse HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
-				const expectedHead = execSync(`git rev-parse ${originalBranch || originalRef}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+				const currentHead = execSync("git rev-parse HEAD", { ...GIT_OPTS, cwd }).trim();
+				const expectedHead = execSync(`git rev-parse ${originalBranch || originalRef}`, { ...GIT_OPTS, cwd }).trim();
 				if (currentHead !== expectedHead) {
 					log(`⚠️ HEAD restore mismatch — forcing checkout`);
-					execSync(`git checkout ${originalBranch || originalRef} --force --quiet`, { cwd, timeout: 5000 });
+					execSync(`git checkout ${originalBranch || originalRef} --force --quiet`, { ...GIT_OPTS, cwd });
 				}
 			} catch (e: any) {
 				log(`⚠️ Could not restore HEAD — run: git checkout ${originalBranch || originalRef}`);
@@ -736,7 +738,7 @@ export default function (pi: ExtensionAPI) {
 			const basePart = range.split("..")[0];
 			let resolvedBase: string;
 			try {
-				resolvedBase = execSync(`git rev-parse ${basePart}`, { cwd: ctx.cwd, encoding: "utf-8", timeout: 5000 }).trim();
+				resolvedBase = execSync(`git rev-parse ${basePart}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
 			} catch {
 				ctx.ui.notify("Could not resolve range base", "error");
 				return;
@@ -783,7 +785,7 @@ export default function (pi: ExtensionAPI) {
 				// Verify commits still exist
 				for (const sha of commits) {
 					try {
-						execSync(`git cat-file -t ${sha}`, { cwd: ctx.cwd, encoding: "utf-8", timeout: 5000 });
+						execSync(`git cat-file -t ${sha}`, { ...GIT_OPTS, cwd: ctx.cwd });
 					} catch {
 						ctx.ui.notify(`Commit ${sha.slice(0, 7)} no longer exists — cannot resume`, "error");
 						return;
