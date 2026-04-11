@@ -1,4 +1,4 @@
-export type LoopMode = "review" | "exec";
+export type LoopMode = "review" | "exec" | "manual";
 
 export type ReviewMode = "fresh" | "incremental";
 
@@ -13,7 +13,7 @@ export interface Config {
 	reviewMode: ReviewMode;
 }
 
-export type Phase = "idle" | "reviewing" | "fixing";
+export type Phase = "idle" | "reviewing" | "fixing" | "awaiting_feedback";
 
 export interface OverseerPromptParams {
 	focus: string;
@@ -23,6 +23,9 @@ export interface OverseerPromptParams {
 	workhorseSummaries: string[];
 	unchangedCommits: string[];
 	changedContextPaths: string[];
+	// Manual mode
+	userFeedback?: string;
+	commitSha?: string;
 }
 
 export interface PromptSet {
@@ -65,6 +68,13 @@ export interface LoopState {
 	changedContextPaths: string[];
 	loopStartedAt: number;
 	roundStartedAt: number;
+	// Manual mode
+	commitList: string[];
+	currentCommitIdx: number;
+	patchIdMap: Map<string, string>;
+	userFeedback: string;
+	manualInnerRound: number;
+	manualBase: string;
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -91,6 +101,12 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		changedContextPaths: [],
 		loopStartedAt: 0,
 		roundStartedAt: 0,
+		commitList: [],
+		currentCommitIdx: 0,
+		patchIdMap: new Map(),
+		userFeedback: "",
+		manualInnerRound: 0,
+		manualBase: "",
 		...overrides,
 	};
 }

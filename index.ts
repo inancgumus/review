@@ -3,6 +3,7 @@
  *
  * /loop [focus] [@path ...]       — Start review loop
  * /loop:exec [focus] [@path ...]  — Start exec loop (plan orchestrator → workhorse)
+ * /loop:manual [range]            — Manual review (you drive, commit by commit)
  * /loop:resume                    — Resume from session state
  * /loop:rounds <n>                — Change max rounds
  * /loop:stop                      — Stop the loop
@@ -21,6 +22,8 @@ import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js"
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
 import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
+import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase } from "./git-manual.js";
+import { execSync } from "node:child_process";
 
 // Block interactive editors during agent turns.
 // GIT_EDITOR/EDITOR/VISUAL → fail with actionable message so the agent retries correctly.
@@ -84,8 +87,9 @@ export default function (pi: ExtensionAPI) {
 		statusPrefix = "";
 	}
 
-	function deferIf(phase: string, fn: () => void): void {
-		setTimeout(() => { if (state.phase === phase) fn(); }, 100);
+	function deferIf(phase: string | string[], fn: () => void): void {
+		const phases = Array.isArray(phase) ? phase : [phase];
+		setTimeout(() => { if (phases.includes(state.phase)) fn(); }, 100);
 	}
 
 	function log(text: string): void {
@@ -150,6 +154,125 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
+	// ── Manual mode ─────────────────────────────────────
+
+	async function showCommitForReview(ctx: any): Promise<void> {
+		state.phase = "awaiting_feedback";
+		const sha = state.commitList[state.currentCommitIdx];
+		if (!sha) { await stopLoop(ctx); return; }
+		const shortSha = sha.slice(0, 7);
+		const subject = getCommitSubject(ctx.cwd, sha);
+
+		const diff = getCommitDiff(ctx.cwd, sha);
+		log(`📋 Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} — ${subject}`);
+		pi.sendMessage({ customType: "loop-diff", content: `\`\`\`diff\n${diff}\n\`\`\``, display: true }, { triggerTurn: false });
+
+		statusPrefix = `👀 Commit ${state.currentCommitIdx + 1}/${state.commitList.length} · ${shortSha}`;
+		updateStatus(ctx);
+
+		while (true) {
+			const action = await ctx.ui.select(
+				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
+				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
+			);
+
+			if (!action) continue;
+
+			if (action.startsWith("💬")) {
+				const feedback = await ctx.ui.input("Feedback");
+				if (!feedback) continue;
+				await startManualInnerLoop(feedback, ctx);
+				return;
+			}
+
+			if (action.startsWith("✅")) {
+				log(`✅ Approved: ${shortSha} — ${subject}`);
+				if (state.currentCommitIdx >= state.commitList.length - 1) {
+					log("✅ All commits reviewed and approved!");
+					if (state.loopStartedAt) {
+						const now = Date.now();
+						log(`⏱ Total: ${formatDuration(now - state.loopStartedAt)} (${formatTime(state.loopStartedAt)} → ${formatTime(now)})`);
+					}
+					ctx.ui.notify(`✅ All ${state.commitList.length} commit(s) approved`, "success");
+					await stopLoop(ctx);
+					return;
+				}
+				state.currentCommitIdx++;
+				return showCommitForReview(ctx);
+			}
+
+			if (action.startsWith("⏭")) {
+				const items = state.commitList.map((s, i) => {
+					const marker = i === state.currentCommitIdx ? " ← current" : "";
+					const subj = getCommitSubject(ctx.cwd, s);
+					return `${i + 1}. ${s.slice(0, 7)} ${subj}${marker}`;
+				});
+				const picked = await ctx.ui.select("Jump to commit", items);
+				if (!picked) continue;
+				const idx = parseInt(picked) - 1;
+				if (idx >= 0 && idx < state.commitList.length) {
+					state.currentCommitIdx = idx;
+					return showCommitForReview(ctx);
+				}
+				continue;
+			}
+
+			if (action.startsWith("⏹")) {
+				await stopLoop(ctx);
+				return;
+			}
+		}
+	}
+
+	async function startManualInnerLoop(feedback: string, ctx: any): Promise<void> {
+		state.userFeedback = feedback;
+		state.round = 0;
+		state.manualInnerRound = 0;
+		state.workhorseSummaries = [];
+		state.roundStartedAt = Date.now();
+
+		const sha = state.commitList[state.currentCommitIdx];
+		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
+
+		log(`💬 Feedback on ${sha.slice(0, 7)}: ${feedback}`);
+
+		// Snapshot patch-ids before workhorse modifies commits
+		state.patchIdMap = buildPatchIdMap(ctx.cwd, state.commitList);
+
+		await startWorkhorse(overseerText, ctx);
+	}
+
+	async function afterManualInnerLoop(ctx: any): Promise<void> {
+		const cwd = loopCommandCtx?.cwd || ctx?.cwd;
+		if (!cwd) return;
+
+		// Re-derive commit list after potential rebase
+		if (state.manualBase) {
+			const range = `${state.manualBase}..HEAD`;
+			const { newList, remap, lost } = remapAfterRebase(cwd, range, state.patchIdMap);
+
+			const oldSha = state.commitList[state.currentCommitIdx];
+			state.commitList = newList;
+
+			// Remap current commit index
+			const newSha = remap.get(oldSha);
+			if (newSha) {
+				const newIdx = newList.indexOf(newSha);
+				if (newIdx >= 0) state.currentCommitIdx = newIdx;
+			}
+
+			// Rebuild patchIdMap
+			state.patchIdMap = buildPatchIdMap(cwd, newList);
+
+			if (lost.length > 0) {
+				log(`⚠️ ${lost.length} commit(s) were split or squashed — review the new commit list`);
+				// Let user pick via the normal Jump flow
+			}
+		}
+
+		await showCommitForReview(loopCommandCtx || ctx);
+	}
+
 	// ── Transitions ─────────────────────────────────────
 
 	async function startOverseer(ctx: any, summaryText?: string): Promise<void> {
@@ -181,6 +304,9 @@ export default function (pi: ExtensionAPI) {
 			contextPaths: state.contextPaths, workhorseSummaries: state.workhorseSummaries,
 			unchangedCommits: state.unchangedCommits,
 			changedContextPaths: state.changedContextPaths,
+			userFeedback: state.mode === "manual" ? state.userFeedback : undefined,
+			commitSha: state.mode === "manual" && state.commitList.length > 0
+				? state.commitList[state.currentCommitIdx] : undefined,
 		}));
 	}
 
@@ -222,7 +348,15 @@ export default function (pi: ExtensionAPI) {
 		updateStatus(ctx);
 		log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
-		pi.sendUserMessage(prompts.buildWorkhorsePrompt(overseerText, state.contextPaths, state.round));
+		// Manual mode: ensure commit SHA prefix is present
+		let workhorseInput = overseerText;
+		if (state.mode === "manual" && state.commitList.length > 0) {
+			const sha = state.commitList[state.currentCommitIdx];
+			if (!workhorseInput.startsWith("[COMMIT:")) {
+				workhorseInput = `[COMMIT:${sha}]\n${workhorseInput}`;
+			}
+		}
+		pi.sendUserMessage(prompts.buildWorkhorsePrompt(workhorseInput, state.contextPaths, state.round));
 	}
 
 	async function onWorkhorseDone(workhorseText: string, eventCtx: any): Promise<void> {
@@ -309,6 +443,14 @@ export default function (pi: ExtensionAPI) {
 			if (rr) rr.endedAt = now;
 			log(`✅ APPROVED`);
 			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
+
+			// Manual mode: inner loop done — re-show commit to user
+			if (state.mode === "manual") {
+				log(`✅ Changes verified — returning to review`);
+				deferIf("reviewing", () => void afterManualInnerLoop(ctx));
+				return;
+			}
+
 			deferIf("reviewing", () => { ctx.ui.notify(`✅ Approved after ${state.round} round(s)`, "success"); stopLoop(ctx); });
 			return;
 		}
@@ -377,6 +519,66 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("loop:exec", {
 		description: "Start exec loop (orchestrator → workhorse). Usage: /loop:exec [focus] [@path ...]",
 		handler: (args, ctx) => startLoop("exec", args, ctx),
+	});
+
+	pi.registerCommand("loop:manual", {
+		description: "Manual review. Usage: /loop:manual [range] (e.g. HEAD~5..HEAD)",
+		handler: async (args, ctx) => {
+			if (state.phase !== "idle") { ctx.ui.notify("Loop already running — /loop:stop to cancel", "warning"); return; }
+			const cfg = loadConfig(ctx.cwd);
+			const trimmedArgs = (args || "").trim();
+
+			let range: string;
+			try {
+				range = resolveRange(ctx.cwd, trimmedArgs);
+			} catch (e: any) {
+				ctx.ui.notify(e.message || "Could not determine commit range", "error");
+				return;
+			}
+
+			const commits = getCommitList(ctx.cwd, range);
+			if (commits.length === 0) {
+				ctx.ui.notify("No commits found in range", "error");
+				return;
+			}
+
+			// Resolve base to concrete SHA for stable re-queries after rebase
+			const basePart = range.split("..")[0];
+			let resolvedBase: string;
+			try {
+				resolvedBase = execSync(`git rev-parse ${basePart}`, { cwd: ctx.cwd, encoding: "utf-8", timeout: 5000 }).trim();
+			} catch {
+				ctx.ui.notify("Could not resolve range base", "error");
+				return;
+			}
+
+			loopCommandCtx = ctx;
+			state = newState({
+				mode: "manual",
+				phase: "awaiting_feedback",
+				round: 0,
+				focus: trimmedArgs || `manual review: ${range}`,
+				initialRequest: `manual review: ${commits.length} commit(s) in ${range}`,
+				contextPaths: [],
+				maxRounds: cfg.maxRounds,
+				reviewMode: "incremental",
+				originalModelStr: modelToStr(ctx.model),
+				originalThinking: pi.getThinkingLevel(),
+				loopStartedAt: Date.now(),
+				commitList: commits,
+				currentCommitIdx: 0,
+				patchIdMap: buildPatchIdMap(ctx.cwd, commits),
+				manualBase: resolvedBase,
+			});
+
+			log(`📝 Manual review · ${commits.length} commit(s) · ${range}`);
+			rememberAnchor(ctx);
+			blockInteractiveEditors();
+			startStatusTimer(ctx);
+			ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
+
+			await showCommitForReview(ctx);
+		},
 	});
 
 	pi.registerCommand("loop:resume", {

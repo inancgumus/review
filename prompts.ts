@@ -1,10 +1,12 @@
 import type { LoopMode, PromptSet, OverseerPromptParams } from "./types.js";
 import { reviewPrompts } from "./prompts-review.js";
 import { execPrompts } from "./prompts-exec.js";
+import { manualPrompts } from "./prompts-manual.js";
 
 export const promptSets: Record<LoopMode, PromptSet> = {
 	review: reviewPrompts,
 	exec: execPrompts,
+	manual: manualPrompts,
 };
 
 // Backward-compat exports (used by index.ts for the default loop mode)

@@ -21,6 +21,35 @@ A single model reviews code but never checks if its suggestions were applied cor
 
 The overseer examines your code, lists blocking issues and nitpicks, then gives a verdict. On `CHANGES_REQUESTED`, the workhorse addresses each issue. The overseer re-examines. The loop repeats until `APPROVED` or max rounds.
 
+### Manual review mode
+
+```
+/loop:manual HEAD~5..HEAD
+/loop:manual                  # auto-detects range from branch merge-base
+```
+
+You review each commit one by one. For each commit, you see the diff and choose: give feedback, approve, jump to another commit, or stop.
+
+When you give feedback, the workhorse fixes the commit while the overseer supervises — verifying your exact feedback was addressed, nothing more. Once the fix is verified, you re-review the same commit. Approve it to move to the next one.
+
+```
+For each commit:
+┌────────────────────────────────────┐
+│ You see the diff                   │
+│ Approve / Feedback / Jump / Stop   │
+└──────────────┬─────────────────────┘
+               │ feedback
+               ▼
+┌────────────────────────────────────┐
+│ Workhorse fixes the commit         │
+│ Overseer verifies your feedback    │
+│ (automatic inner loop)             │
+└──────────────┬─────────────────────┘
+               │ verified
+               ▼
+You re-review → approve → next commit
+```
+
 ### Exec mode
 
 ```
@@ -69,6 +98,7 @@ Round N
 |---|---|
 | `/loop [focus] [@path ...]` | Start review loop. Focus narrows what to review. `@path` injects file/directory contents. |
 | `/loop:exec [focus] [@path ...]` | Start exec loop. Orchestrator drip-feeds plan steps to workhorse. Same `@path` syntax. |
+| `/loop:manual [range]` | Manual review. You review each commit, give feedback, the workhorse fixes. |
 | `/loop:stop` | Stop the loop and restore your original model. |
 | `/loop:resume` | Resume after a pi restart or reload. |
 | `/loop:rounds <n>` | Change max rounds mid-loop. |
@@ -78,13 +108,15 @@ Round N
 
 ## Features
 
-### Two loop modes
+### Three loop modes
 
 **Review** (`/loop`) — Code review loop. The overseer reads code, lists issues, the workhorse addresses them. Suitable for reviewing existing commits or uncommitted changes.
 
 **Exec** (`/loop:exec`) — Plan execution loop. The orchestrator reads a plan (passed as `@path` context) and the codebase, then tells the workhorse what to build one step at a time. If a step is incomplete, the orchestrator reassigns it. The plan can be any format — the orchestrator LLM reads it and decides what to drip-feed.
 
-Both modes share the same loop machinery, config, execution modes, and log viewer.
+**Manual** (`/loop:manual`) — Human-in-the-loop review. You review each commit, give feedback, and the workhorse fixes it while the overseer verifies. The overseer only checks that the workhorse addressed your exact feedback — it never adds its own opinions. Always incremental.
+
+All three modes share the same loop machinery, config, and log viewer.
 
 ### Two execution modes
 
