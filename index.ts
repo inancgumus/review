@@ -157,20 +157,23 @@ export default function (pi: ExtensionAPI) {
 	// ── Manual mode ─────────────────────────────────────
 
 	async function showCommitForReview(ctx: any): Promise<void> {
-		state.phase = "awaiting_feedback";
-		const sha = state.commitList[state.currentCommitIdx];
-		if (!sha) { await stopLoop(ctx); return; }
-		const shortSha = sha.slice(0, 7);
-		const subject = getCommitSubject(ctx.cwd, sha);
-
-		const diff = getCommitDiff(ctx.cwd, sha);
-		log(`📋 Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} — ${subject}`);
-		pi.sendMessage({ customType: "loop-diff", content: `\`\`\`diff\n${diff}\n\`\`\``, display: true }, { triggerTurn: false });
-
-		statusPrefix = `👀 Commit ${state.currentCommitIdx + 1}/${state.commitList.length} · ${shortSha}`;
-		updateStatus(ctx);
-
+		let showDiff = true;
 		while (true) {
+			state.phase = "awaiting_feedback";
+			const sha = state.commitList[state.currentCommitIdx];
+			if (!sha) { await stopLoop(ctx); return; }
+			const shortSha = sha.slice(0, 7);
+			const subject = getCommitSubject(ctx.cwd, sha);
+
+			if (showDiff) {
+				const diff = getCommitDiff(ctx.cwd, sha);
+				log(`📋 Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} — ${subject}`);
+				pi.sendMessage({ customType: "loop-diff", content: `\`\`\`diff\n${diff}\n\`\`\``, display: true }, { triggerTurn: false });
+				statusPrefix = `👀 Commit ${state.currentCommitIdx + 1}/${state.commitList.length} · ${shortSha}`;
+				updateStatus(ctx);
+			}
+			showDiff = false;
+
 			const action = await ctx.ui.select(
 				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
 				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
@@ -198,7 +201,8 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				state.currentCommitIdx++;
-				return showCommitForReview(ctx);
+				showDiff = true;
+				continue;
 			}
 
 			if (action.startsWith("⏭")) {
@@ -209,10 +213,10 @@ export default function (pi: ExtensionAPI) {
 				});
 				const picked = await ctx.ui.select("Jump to commit", items);
 				if (!picked) continue;
-				const idx = parseInt(picked) - 1;
-				if (idx >= 0 && idx < state.commitList.length) {
+				const idx = items.indexOf(picked);
+				if (idx >= 0) {
 					state.currentCommitIdx = idx;
-					return showCommitForReview(ctx);
+					showDiff = true;
 				}
 				continue;
 			}
