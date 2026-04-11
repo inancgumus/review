@@ -177,24 +177,21 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Plannotator integration ───────────────────────
 
-	async function detectPlannotator(): Promise<boolean> {
+	function detectPlannotator(): boolean {
 		if (state.hasPlannotator !== null) return state.hasPlannotator;
 		const cfg = loadConfig(loopCommandCtx?.cwd || "");
 		if (!cfg.plannotator) { state.hasPlannotator = false; return false; }
 		if (!pi.events?.emit) { state.hasPlannotator = false; return false; }
-		return new Promise<boolean>((resolve) => {
-			let responded = false;
-			pi.events.emit("plannotator:request", {
-				requestId: `detect-${Date.now()}`,
-				action: "review-status",
-				payload: { reviewId: "__loop_detect__" },
-				respond: () => { responded = true; },
-			});
-			setTimeout(() => {
-				state.hasPlannotator = responded;
-				resolve(responded);
-			}, 50);
+		// Synchronous detection — plannotator's review-status handler responds synchronously
+		let responded = false;
+		pi.events.emit("plannotator:request", {
+			requestId: `detect-${Date.now()}`,
+			action: "review-status",
+			payload: { reviewId: "__loop_detect__" },
+			respond: () => { responded = true; },
 		});
+		state.hasPlannotator = responded;
+		return responded;
 	}
 
 	async function showCommitViaPlannotator(ctx: any, sha: string): Promise<{ action: "approve" | "feedback" | "stop"; feedback?: string } | null> {
@@ -314,7 +311,7 @@ export default function (pi: ExtensionAPI) {
 			if (action.startsWith("💬")) {
 				// Plannotator for rich line-level annotations, editor/input fallback
 				let feedback: string | undefined;
-				if (await detectPlannotator()) {
+				if (detectPlannotator()) {
 					const result = await showCommitViaPlannotator(ctx, sha);
 					if (result?.action === "approve") {
 						// User approved in plannotator instead of giving feedback
