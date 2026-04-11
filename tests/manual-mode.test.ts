@@ -452,3 +452,60 @@ test("/loop:resume recovers manual mode session", async () => {
 		repo.cleanup();
 	}
 });
+
+test("/loop:manual resets context between feedback cycles", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+
+		// Track navigateTree calls
+		const navTargets: string[] = [];
+		h.ctx.navigateTree = async (id: string) => { navTargets.push(id); return { cancelled: false }; };
+
+		// Cycle 1: give feedback
+		h.selectQueue.push("💬 Feedback");
+		h.inputQueue.push("fix error handling");
+
+		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
+
+		// Should have navigated to anchor before workhorse
+		const anchorId = navTargets[0];
+		assert.ok(anchorId, "should navigate to anchor in cycle 1");
+
+		// Simulate cycle 1 completing: workhorse done → overseer approves
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-wh",
+			type: "message",
+			message: { role: "assistant", content: "Fixed.\n\nFIXES_COMPLETE", stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-os",
+			type: "message",
+			message: { role: "assistant", content: "All good.\n\nVERDICT: APPROVED", stopReason: "end_turn" },
+		});
+
+		// Cycle 2: give new feedback after overseer approves
+		h.selectQueue.push("💬 Feedback");
+		h.inputQueue.push("also fix the logging");
+
+		const navCountBeforeCycle2 = navTargets.length;
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait(300);
+
+		// Should have navigated to anchor AGAIN for cycle 2 (context reset)
+		const cycle2Navs = navTargets.slice(navCountBeforeCycle2);
+		const anchorNavs = cycle2Navs.filter(id => id === anchorId);
+		assert.ok(anchorNavs.length >= 1, "should navigate to anchor at start of cycle 2 to reset context");
+
+		// Workhorse prompt should contain new feedback, not old
+		const lastPrompt = h.userMessages[h.userMessages.length - 1];
+		assert.match(lastPrompt, /also fix the logging/, "cycle 2 workhorse gets new feedback");
+	} finally {
+		repo.cleanup();
+	}
+});
