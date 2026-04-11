@@ -277,11 +277,21 @@ export default function (pi: ExtensionAPI) {
 			}
 			showDiff = false;
 
-			// Try plannotator first
-			if (await detectPlannotator()) {
-				const result = await showCommitViaPlannotator(ctx, sha);
-				if (result) {
-					if (result.action === "approve") {
+			// TUI menu — always in the terminal
+			const action = await ctx.ui.select(
+				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
+				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
+			);
+
+			if (!action) continue;
+
+			if (action.startsWith("💬")) {
+				// Plannotator for rich line-level annotations, editor/input fallback
+				let feedback: string | undefined;
+				if (await detectPlannotator()) {
+					const result = await showCommitViaPlannotator(ctx, sha);
+					if (result?.action === "approve") {
+						// User approved in plannotator instead of giving feedback
 						log(`✅ Approved: ${shortSha} — ${subject}`);
 						if (state.currentCommitIdx >= state.commitList.length - 1) {
 							log("✅ All commits reviewed and approved!");
@@ -296,27 +306,13 @@ export default function (pi: ExtensionAPI) {
 						showDiff = true;
 						continue;
 					}
-					if (result.action === "feedback" && result.feedback) {
-						await startManualInnerLoop(result.feedback, ctx);
-						return;
-					}
-					if (result.action === "stop") { await stopLoop(ctx); return; }
+					feedback = result?.feedback;
 				}
-				// null result = plannotator dismissed, fall through to TUI
-			}
-
-			// TUI fallback
-			const action = await ctx.ui.select(
-				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
-				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
-			);
-
-			if (!action) continue;
-
-			if (action.startsWith("💬")) {
-				const feedback = typeof ctx.ui.editor === "function"
-					? await ctx.ui.editor("Feedback (Shift+Enter for newline)")
-					: await ctx.ui.input("Feedback");
+				if (!feedback) {
+					feedback = typeof ctx.ui.editor === "function"
+						? await ctx.ui.editor("Feedback (Shift+Enter for newline)")
+						: await ctx.ui.input("Feedback");
+				}
 				if (!feedback) continue;
 				await startManualInnerLoop(feedback, ctx);
 				return;
