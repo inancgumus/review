@@ -389,12 +389,16 @@ export default function (pi: ExtensionAPI) {
 		state.round = 0;
 		state.manualInnerRound = 0;
 		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
 		state.roundStartedAt = Date.now();
 
 		const sha = state.commitList[state.currentCommitIdx];
 		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
 
 		log(`💬 Feedback on ${sha.slice(0, 7)}: ${feedback}`);
+
+		// Reset context — start a clean branch from the anchor
+		if (!await navigateToAnchor(ctx)) return;
 
 		// Snapshot patch-ids before workhorse modifies commits
 		state.patchIdMap = buildPatchIdMap(ctx.cwd, state.commitList);
