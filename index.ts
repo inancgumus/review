@@ -22,7 +22,7 @@ import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js"
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
 import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
-import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase } from "./git-manual.js";
+import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState } from "./git-manual.js";
 import { execSync } from "node:child_process";
 
 // Block interactive editors during agent turns.
@@ -122,6 +122,11 @@ export default function (pi: ExtensionAPI) {
 			focus: state.focus,
 			initialRequest: state.initialRequest,
 			contextPaths: state.contextPaths,
+			// Manual mode
+			mode: state.mode,
+			commitList: state.mode === "manual" ? state.commitList : undefined,
+			currentCommitIdx: state.mode === "manual" ? state.currentCommitIdx : undefined,
+			manualBase: state.mode === "manual" ? state.manualBase : undefined,
 		});
 		state.anchorEntryId = ctx.sessionManager.getLeafId();
 	}
@@ -172,6 +177,8 @@ export default function (pi: ExtensionAPI) {
 
 	async function detectPlannotator(): Promise<boolean> {
 		if (state.hasPlannotator !== null) return state.hasPlannotator;
+		const cfg = loadConfig(loopCommandCtx?.cwd || "");
+		if (!cfg.plannotator) { state.hasPlannotator = false; return false; }
 		if (!pi.events?.emit) { state.hasPlannotator = false; return false; }
 		return new Promise<boolean>((resolve) => {
 			let responded = false;
@@ -260,6 +267,23 @@ export default function (pi: ExtensionAPI) {
 
 	async function showCommitForReview(ctx: any): Promise<void> {
 		pauseTimer();
+
+		// Recover from broken git state before showing anything
+		const gitIssue = checkGitState(ctx.cwd);
+		if (gitIssue) {
+			log(`⚠️ Git: ${gitIssue.message}`);
+			const fixed = fixGitState(ctx.cwd, gitIssue);
+			if (fixed) {
+				log(`✅ Auto-fixed: ${gitIssue.message}`);
+			} else if (gitIssue.type === "dirty_tree") {
+				log(`⚠️ Working tree has uncommitted changes — proceeding anyway`);
+			} else {
+				ctx.ui.notify(`Git issue: ${gitIssue.message} — fix manually and /loop:resume`, "error");
+				await stopLoop(ctx);
+				return;
+			}
+		}
+
 		let showDiff = true;
 		while (true) {
 			state.phase = "awaiting_feedback";
@@ -552,6 +576,17 @@ export default function (pi: ExtensionAPI) {
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
+
+		// Clean up broken git state left by inner loop
+		if (state.mode === "manual" && wasRunning) {
+			const gitIssue = checkGitState(ctx.cwd);
+			if (gitIssue) {
+				const fixed = fixGitState(ctx.cwd, gitIssue);
+				if (fixed) log(`✅ Cleaned up: ${gitIssue.message}`);
+				else if (gitIssue.type !== "dirty_tree") log(`⚠️ ${gitIssue.message} — fix manually`);
+			}
+		}
+
 		resumeTimer();
 		stopStatusTimer();
 		state.phase = "idle";
@@ -740,9 +775,48 @@ export default function (pi: ExtensionAPI) {
 		description: "Resume loop from session state",
 		handler: async (_args, ctx) => {
 			if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
+			const anchor = findAnchor(ctx);
+
+			// Manual mode resume — bypasses reconstructState entirely
+			if (anchor?.data?.mode === "manual" && Array.isArray(anchor.data.commitList)) {
+				const commits: string[] = anchor.data.commitList;
+				// Verify commits still exist
+				for (const sha of commits) {
+					try {
+						execSync(`git cat-file -t ${sha}`, { cwd: ctx.cwd, encoding: "utf-8", timeout: 5000 });
+					} catch {
+						ctx.ui.notify(`Commit ${sha.slice(0, 7)} no longer exists — cannot resume`, "error");
+						return;
+					}
+				}
+				const cfg = loadConfig(ctx.cwd);
+				loopCommandCtx = ctx;
+				state = newState({
+					mode: "manual",
+					phase: "awaiting_feedback",
+					reviewMode: "incremental",
+					focus: anchor.data.focus ?? `manual review: ${commits.length} commit(s)`,
+					initialRequest: anchor.data.initialRequest ?? `manual review: ${commits.length} commit(s)`,
+					contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
+					maxRounds: cfg.maxRounds,
+					originalModelStr: modelToStr(ctx.model),
+					originalThinking: pi.getThinkingLevel(),
+					anchorEntryId: anchor.id,
+					loopStartedAt: Date.now(),
+					commitList: commits,
+					currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
+					patchIdMap: buildPatchIdMap(ctx.cwd, commits),
+					manualBase: anchor.data.manualBase ?? "",
+				});
+				blockInteractiveEditors();
+				startStatusTimer(ctx);
+				ctx.ui.notify(`Resuming manual review — commit ${state.currentCommitIdx + 1}/${commits.length}`, "info");
+				await showCommitForReview(ctx);
+				return;
+			}
+
 			const recovered = reconstructState(ctx);
 			if (!recovered) { ctx.ui.notify("Nothing to resume. Use /loop to start.", "info"); return; }
-			const anchor = findAnchor(ctx);
 			const cfg = loadConfig(ctx.cwd);
 			loopCommandCtx = ctx;
 			state = newState({
@@ -1006,6 +1080,7 @@ export default function (pi: ExtensionAPI) {
 					`Workhorse thinking: ${cfg.workhorseThinking}`,
 					`Max rounds: ${cfg.maxRounds}`,
 					`Loop mode: ${cfg.reviewMode}`,
+					`Plannotator: ${cfg.plannotator ? "enabled" : "disabled"}`,
 				]);
 				if (!action) break;
 				if (action.startsWith("Overseer model")) await pickModel("overseerModel", cfg, ctx);
@@ -1014,6 +1089,13 @@ export default function (pi: ExtensionAPI) {
 				else if (action.startsWith("Workhorse thinking")) await pickThinking("workhorseThinking", cfg.workhorseThinking, ctx);
 				else if (action.startsWith("Max rounds")) await editMaxRounds(cfg.maxRounds, ctx);
 				else if (action.startsWith("Loop mode")) await pickReviewMode(cfg.reviewMode, ctx);
+				else if (action.startsWith("Plannotator")) {
+					const newVal = !cfg.plannotator;
+					saveConfigField("plannotator", newVal as any);
+					// Reset detection cache so next manual loop re-probes
+					state.hasPlannotator = null;
+					ctx.ui.notify(`Plannotator → ${newVal ? "enabled" : "disabled"}`, "success");
+				}
 			}
 		},
 	});

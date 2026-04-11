@@ -338,6 +338,56 @@ test("/loop:manual auto-detects range from branch", async () => {
 	}
 });
 
+test("/loop:manual pauses timer during awaiting_feedback", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "first commit");
+
+		const h = createHarness(repo.cwd);
+
+		const statuses: string[] = [];
+		h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "loop") statuses.push(text || ""); };
+
+		// Stop immediately — we just want to check the status while awaiting feedback
+		h.selectQueue.push("⏹ Stop");
+
+		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
+
+		// Find the non-empty status set during awaiting_feedback (before stopLoop clears it)
+		const awaitingStatus = statuses.find(s => s.includes("Total:"));
+		assert.ok(awaitingStatus, `should have a status with Total:, got: [${statuses.join(", ")}]`);
+		assert.ok(awaitingStatus!.includes("⏸"), `status should show ⏸ (paused) during awaiting_feedback, got: ${awaitingStatus}`);
+		assert.ok(!awaitingStatus!.includes("⏱"), `status should NOT show ⏱ (running) during awaiting_feedback, got: ${awaitingStatus}`);
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:manual resumes timer when inner loop starts", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+
+		let lastStatus = "";
+		h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "loop") lastStatus = text || ""; };
+
+		// Give feedback to trigger inner loop
+		h.selectQueue.push("💬 Feedback");
+		h.inputQueue.push("fix the bug");
+
+		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
+
+		// After feedback, startManualInnerLoop → resumeTimer → startWorkhorse → phase = reviewing
+		// Status should now show ⏱ (running), not ⏸ (paused)
+		assert.ok(lastStatus.includes("⏱"), `status should show ⏱ (running) after inner loop starts, got: ${lastStatus}`);
+		assert.ok(!lastStatus.includes("⏸"), `status should NOT show ⏸ (paused) after inner loop starts, got: ${lastStatus}`);
+	} finally {
+		repo.cleanup();
+	}
+});
+
 test("/loop:manual uses incremental reviewMode", async () => {
 	const repo = createTempRepo();
 	try {
@@ -367,6 +417,37 @@ test("/loop:manual uses incremental reviewMode", async () => {
 		const overseerPrompt = h.userMessages[h.userMessages.length - 1];
 		assert.match(overseerPrompt, /verify/i, "uses verification prompt");
 		assert.doesNotMatch(overseerPrompt, /code overseer/i, "not a full review prompt");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:resume recovers manual mode session", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "hello", "first commit");
+		const sha2 = addCommit(repo.cwd, "b.txt", "world", "second commit");
+
+		const h = createHarness(repo.cwd);
+
+		// Start manual loop, approve first commit, then stop on second
+		h.selectQueue.push("✅ Approve");
+		h.selectQueue.push("⏹ Stop");
+		await h.commands.get("loop:manual")!(`${sha1}~1..HEAD`, h.ctx);
+
+		// Now resume — the anchor should have manual mode data
+		// Queue stop so the resumed showCommitForReview returns
+		h.selectQueue.push("⏹ Stop");
+
+		let notifyMsg = "";
+		h.ctx.ui.notify = (msg: string) => { notifyMsg = msg; };
+
+		await h.commands.get("loop:resume")!("", h.ctx);
+
+		// Should have resumed in manual mode, showing commit for review
+		assert.match(notifyMsg, /resuming manual/i, "should notify manual resume");
+		// Should NOT have sent any model prompts (manual mode waits for user)
+		assert.equal(h.userMessages.length, 0, "no model prompts on manual resume");
 	} finally {
 		repo.cleanup();
 	}

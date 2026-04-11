@@ -11,6 +11,7 @@ export interface Config {
 	workhorseThinking: ThinkingLevel;
 	maxRounds: number;
 	reviewMode: ReviewMode;
+	plannotator: boolean;
 }
 
 export type Phase = "idle" | "reviewing" | "fixing" | "awaiting_feedback";

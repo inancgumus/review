@@ -12,6 +12,7 @@ const DEFAULTS: Config = {
 	workhorseThinking: "xhigh",
 	maxRounds: 10,
 	reviewMode: "fresh",
+	plannotator: true,
 };
 
 const SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
@@ -36,6 +37,7 @@ export function loadConfig(_cwd: string): Config {
 		workhorseThinking: validThinking(saved.workhorseThinking) ?? DEFAULTS.workhorseThinking,
 		maxRounds: saved.maxRounds ?? DEFAULTS.maxRounds,
 		reviewMode: saved.reviewMode === "incremental" ? "incremental" : DEFAULTS.reviewMode,
+		plannotator: saved.plannotator !== false,
 	};
 }
 
@@ -50,7 +52,7 @@ export function getScopedModels(cwd: string): string[] {
 	return models;
 }
 
-export function saveConfigField(key: keyof Config, value: string | number): void {
+export function saveConfigField(key: keyof Config, value: string | number | boolean): void {
 	let settings: Record<string, any> = {};
 	try { settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8")); } catch { /* new */ }
 	if (!settings["loop"]) settings["loop"] = {};

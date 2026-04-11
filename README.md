@@ -32,6 +32,8 @@ You review each commit one by one. For each commit, you see the diff and choose:
 
 When you give feedback, the workhorse fixes the commit while the overseer supervises — verifying your exact feedback was addressed, nothing more. Once the fix is verified, you re-review the same commit. Approve it to move to the next one.
 
+> **Note:** Picking Feedback opens [plannotator](https://github.com/inancgumus/plannotator) in the browser for line-level annotations. Falls back to a multi-line editor (Shift+Enter for newlines) if plannotator isn't installed.
+
 ```
 For each commit:
 ┌────────────────────────────────────┐
@@ -114,9 +116,13 @@ Round N
 
 **Exec** (`/loop:exec`) — Plan execution loop. The orchestrator reads a plan (passed as `@path` context) and the codebase, then tells the workhorse what to build one step at a time. If a step is incomplete, the orchestrator reassigns it. The plan can be any format — the orchestrator LLM reads it and decides what to drip-feed.
 
-**Manual** (`/loop:manual`) — Human-in-the-loop review. You review each commit, give feedback, and the workhorse fixes it while the overseer verifies. The overseer only checks that the workhorse addressed your exact feedback — it never adds its own opinions. Always incremental.
+**Manual** (`/loop:manual`) — Human-in-the-loop review. You review each commit, give feedback, and the workhorse fixes it while the overseer verifies. The overseer only checks that the workhorse addressed your exact feedback — it never adds its own opinions. Always incremental. Picks Feedback to open plannotator in the browser for line-level annotations, or a multi-line editor (Shift+Enter for newlines) if plannotator is not installed.
 
 All three modes share the same loop machinery, config, and log viewer.
+
+### Time tracking
+
+In manual mode, the timer pauses while you're reviewing (awaiting_feedback phase) and resumes when the inner loop starts (workhorse/overseer working). Total time only counts agent work, not your review time. The status bar shows ⏸ when paused and ⏱ when running.
 
 ### Two execution modes
 
@@ -146,6 +152,12 @@ Files are re-read from disk before each prompt. Edit a file between rounds and t
 - **Split requests** — Uses interactive rebase with `edit` to split commits.
 
 **Exec mode** — The workhorse creates regular commits with descriptive messages. One commit per step unless told otherwise.
+
+**Manual mode** — The workhorse follows the same git rules as review mode:
+
+- **HEAD commit** — Amends with `--no-edit`.
+- **Non-HEAD commit** — Creates `--fixup` commits targeting the reviewed SHA, then runs `git rebase -i --autosquash` to fold them in.
+- After rebase, commit SHAs change — tracked automatically via patch-id matching.
 
 ### Interactive editor protection
 
@@ -186,6 +198,8 @@ Press **ESC** while either agent works. Type your guidance. The agent continues 
 ### Resume
 
 `/loop:resume` reconstructs loop state from session history after a pi restart or reload.
+
+`/loop:resume` works for review and exec modes. Manual mode resume is also supported — commit list, current position, and range base are persisted to the session.
 
 ## Install
 

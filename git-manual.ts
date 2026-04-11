@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000 });
 
@@ -72,6 +74,64 @@ export function buildPatchIdMap(cwd: string, shas: string[]): Map<string, string
 		}
 	}
 	return map;
+}
+
+export interface GitStateIssue {
+	type: "rebase_in_progress" | "detached_head" | "dirty_tree";
+	message: string;
+}
+
+/** Check for git state issues that could break manual mode operations. */
+export function checkGitState(cwd: string, expectedBranch?: string): GitStateIssue | null {
+	try {
+		const gitDir = execSync("git rev-parse --git-dir", opts(cwd)).trim();
+		const absGitDir = gitDir.startsWith("/") ? gitDir : join(cwd, gitDir);
+
+		// In-progress rebase blocks everything
+		if (existsSync(join(absGitDir, "rebase-merge")) || existsSync(join(absGitDir, "rebase-apply"))) {
+			return { type: "rebase_in_progress", message: "Rebase in progress" };
+		}
+
+		// Detached HEAD — workhorse needs to be on a branch
+		if (expectedBranch) {
+			try {
+				execSync("git symbolic-ref -q HEAD", opts(cwd));
+			} catch {
+				return { type: "detached_head", message: "HEAD is detached" };
+			}
+		}
+
+		// Dirty working tree — uncommitted changes could cause checkout/rebase failures
+		const status = execSync("git status --porcelain", opts(cwd)).trim();
+		if (status) {
+			return { type: "dirty_tree", message: "Uncommitted changes in working tree" };
+		}
+	} catch {
+		// Not a git repo or git not available
+	}
+	return null;
+}
+
+/** Attempt to fix common git state issues. Returns true if fixed. */
+export function fixGitState(cwd: string, issue: GitStateIssue, targetBranch?: string): boolean {
+	try {
+		switch (issue.type) {
+			case "rebase_in_progress":
+				execSync("git rebase --abort", opts(cwd));
+				return true;
+			case "detached_head":
+				if (targetBranch) {
+					execSync(`git checkout ${targetBranch} --quiet`, opts(cwd));
+					return true;
+				}
+				return false;
+			case "dirty_tree":
+				// Don't auto-fix — user might have intentional changes
+				return false;
+		}
+	} catch {
+		return false;
+	}
 }
 
 /**

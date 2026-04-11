@@ -222,3 +222,59 @@ test("remapAfterRebase: detects lost commits after squash", () => {
 		cleanup(cwd);
 	}
 });
+
+// ── checkGitState / fixGitState ─────────────────────────
+
+import { checkGitState, fixGitState } from "../git-manual.ts";
+
+test("checkGitState: clean repo returns null", () => {
+	const { cwd } = makeRepo();
+	const run = (cmd: string) => execSync(cmd, { cwd, encoding: "utf-8" }).trim();
+	try {
+		execSync("echo 'a' > a.txt", { cwd });
+		run("git add a.txt");
+		run("git commit -m 'clean'");
+		assert.equal(checkGitState(cwd), null);
+	} finally {
+		cleanup(cwd);
+	}
+});
+
+test("checkGitState: detects dirty tree", () => {
+	const { cwd } = makeRepo();
+	try {
+		execSync("echo 'dirty' > dirty.txt", { cwd });
+		const issue = checkGitState(cwd);
+		assert.ok(issue);
+		assert.equal(issue!.type, "dirty_tree");
+	} finally {
+		cleanup(cwd);
+	}
+});
+
+test("checkGitState: detects in-progress rebase", () => {
+	const { cwd } = makeRepo();
+	const run = (cmd: string) => execSync(cmd, { cwd, encoding: "utf-8" }).trim();
+	try {
+		execSync("echo 'a' > a.txt", { cwd });
+		run("git add a.txt");
+		run("git commit -m 'A'");
+		execSync("echo 'b' > a.txt", { cwd });
+		run("git add a.txt");
+		run("git commit -m 'B'");
+		// Start a rebase that will conflict
+		try {
+			execSync("GIT_SEQUENCE_EDITOR=\"sed -i '' 's/pick/edit/'\" git rebase -i HEAD~1", { cwd, encoding: "utf-8" });
+		} catch {}
+		const issue = checkGitState(cwd);
+		assert.ok(issue);
+		assert.equal(issue!.type, "rebase_in_progress");
+
+		// fixGitState should abort it
+		const fixed = fixGitState(cwd, issue!);
+		assert.ok(fixed, "should abort the rebase");
+		assert.equal(checkGitState(cwd), null, "should be clean after abort");
+	} finally {
+		cleanup(cwd);
+	}
+});
