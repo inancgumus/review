@@ -9,18 +9,25 @@ const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000
 export function resolveRange(cwd: string, rangeArg: string): string {
 	if (rangeArg) return rangeArg;
 
-	try {
-		const base = execSync("git merge-base HEAD main", opts(cwd)).trim();
-		return `${base}..HEAD`;
-	} catch {
-		// main not found, try master
+	const head = execSync("git rev-parse HEAD", opts(cwd)).trim();
+
+	for (const branch of ["main", "master"]) {
+		try {
+			const base = execSync(`git merge-base HEAD ${branch}`, opts(cwd)).trim();
+			if (base !== head) return `${base}..HEAD`;
+			// On the target branch itself — fall through to root detection
+		} catch {
+			// branch not found
+		}
 	}
+
+	// On main/master or no remote branch: use root commit as base
 	try {
-		const base = execSync("git merge-base HEAD master", opts(cwd)).trim();
-		return `${base}..HEAD`;
-	} catch {
-		throw new Error("Unable to determine range: no main or master branch found");
-	}
+		const root = execSync("git rev-list --max-parents=0 HEAD", opts(cwd)).trim().split("\n")[0];
+		if (root) return `${root}..HEAD`;
+	} catch {}
+
+	throw new Error("Unable to determine range: no main or master branch and no root commit found");
 }
 
 /** Return full SHAs in chronological order for the given range. */

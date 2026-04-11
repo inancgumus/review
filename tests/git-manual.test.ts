@@ -57,6 +57,22 @@ test("resolveRange: detects merge-base from main", () => {
 	}
 });
 
+test("resolveRange: on main with commits uses root as base", () => {
+	const { cwd, root } = makeRepo();
+	const run = (cmd: string) => execSync(cmd, { cwd, encoding: "utf-8" }).trim();
+	try {
+		// Stay on main, add commits
+		execSync("echo 'a' > a.txt", { cwd });
+		run("git add a.txt");
+		run("git commit -m 'commit on main'");
+
+		const result = resolveRange(cwd, "");
+		assert.equal(result, `${root}..HEAD`, "should use root commit as base when on main");
+	} finally {
+		cleanup(cwd);
+	}
+});
+
 // ── getCommitList ───────────────────────────────────────
 
 test("getCommitList: returns SHAs in order", () => {
