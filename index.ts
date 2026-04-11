@@ -66,12 +66,24 @@ export default function (pi: ExtensionAPI) {
 	let statusPrefix = "";
 	let statusTimer: ReturnType<typeof setInterval> | null = null;
 
+	function totalElapsed(): number {
+		if (!state.loopStartedAt) return 0;
+		return Date.now() - state.loopStartedAt - state.pausedElapsed;
+	}
+
 	function updateStatus(ctx: any): void {
 		if (state.phase === "idle" || !statusPrefix) return;
 		const now = Date.now();
 		let status = statusPrefix;
 		if (state.roundStartedAt) status += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
-		if (state.loopStartedAt) status += ` · ⏱ Total: ${formatDuration(now - state.loopStartedAt)}`;
+		if (state.loopStartedAt) {
+			// In awaiting_feedback, show paused total; otherwise show live total
+			if (state.phase === "awaiting_feedback") {
+				status += ` · ⏸ Total: ${formatDuration(totalElapsed())}`;
+			} else {
+				status += ` · ⏱ Total: ${formatDuration(totalElapsed())}`;
+			}
+		}
 		ctx.ui.setStatus("loop", status);
 	}
 
@@ -156,7 +168,62 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Manual mode ─────────────────────────────────────
 
+	// ── Plannotator integration ───────────────────────
+
+	function detectPlannotator(): boolean {
+		if (state.hasPlannotator !== null) return state.hasPlannotator;
+		try {
+			let handled = false;
+			const unsub = pi.events.on("plannotator:response", () => { handled = true; });
+			pi.events.emit("plannotator:request", { action: "ping" });
+			unsub();
+			state.hasPlannotator = handled;
+		} catch {
+			state.hasPlannotator = false;
+		}
+		return state.hasPlannotator;
+	}
+
+	async function showCommitViaPlannotator(ctx: any, sha: string): Promise<{ action: "approve" | "feedback" | "jump" | "stop"; feedback?: string; jumpIdx?: number } | null> {
+		return new Promise((resolve) => {
+			const unsub = pi.events.on("plannotator:review-result", (data: any) => {
+				unsub();
+				if (!data || typeof data !== "object") { resolve(null); return; }
+				if (data.approved) { resolve({ action: "approve" }); return; }
+				if (data.feedback) { resolve({ action: "feedback", feedback: String(data.feedback) }); return; }
+				resolve(null);
+			});
+
+			// Ask plannotator to show this commit's diff for review
+			pi.events.emit("plannotator:request", {
+				action: "code-review",
+				sha,
+				cwd: ctx.cwd,
+				commitIndex: state.currentCommitIdx,
+				totalCommits: state.commitList.length,
+			});
+		});
+	}
+
+	// ── Time tracking ───────────────────────────
+
+	let pauseStartedAt = 0;
+
+	function pauseTimer(): void {
+		if (pauseStartedAt === 0) pauseStartedAt = Date.now();
+	}
+
+	function resumeTimer(): void {
+		if (pauseStartedAt > 0) {
+			state.pausedElapsed += Date.now() - pauseStartedAt;
+			pauseStartedAt = 0;
+		}
+	}
+
+	// ── Commit review UI ───────────────────────
+
 	async function showCommitForReview(ctx: any): Promise<void> {
+		pauseTimer();
 		let showDiff = true;
 		while (true) {
 			state.phase = "awaiting_feedback";
@@ -174,6 +241,35 @@ export default function (pi: ExtensionAPI) {
 			}
 			showDiff = false;
 
+			// Try plannotator first
+			if (detectPlannotator()) {
+				const result = await showCommitViaPlannotator(ctx, sha);
+				if (result) {
+					if (result.action === "approve") {
+						log(`✅ Approved: ${shortSha} — ${subject}`);
+						if (state.currentCommitIdx >= state.commitList.length - 1) {
+							log("✅ All commits reviewed and approved!");
+							if (state.loopStartedAt) {
+								log(`⏱ Total: ${formatDuration(totalElapsed())} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
+							}
+							ctx.ui.notify(`✅ All ${state.commitList.length} commit(s) approved`, "success");
+							await stopLoop(ctx);
+							return;
+						}
+						state.currentCommitIdx++;
+						showDiff = true;
+						continue;
+					}
+					if (result.action === "feedback" && result.feedback) {
+						await startManualInnerLoop(result.feedback, ctx);
+						return;
+					}
+					if (result.action === "stop") { await stopLoop(ctx); return; }
+				}
+				// null result = plannotator dismissed, fall through to TUI
+			}
+
+			// TUI fallback
 			const action = await ctx.ui.select(
 				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
 				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
@@ -182,7 +278,9 @@ export default function (pi: ExtensionAPI) {
 			if (!action) continue;
 
 			if (action.startsWith("💬")) {
-				const feedback = await ctx.ui.input("Feedback");
+				const feedback = typeof ctx.ui.editor === "function"
+					? await ctx.ui.editor("Feedback (Shift+Enter for newline)")
+					: await ctx.ui.input("Feedback");
 				if (!feedback) continue;
 				await startManualInnerLoop(feedback, ctx);
 				return;
@@ -193,8 +291,7 @@ export default function (pi: ExtensionAPI) {
 				if (state.currentCommitIdx >= state.commitList.length - 1) {
 					log("✅ All commits reviewed and approved!");
 					if (state.loopStartedAt) {
-						const now = Date.now();
-						log(`⏱ Total: ${formatDuration(now - state.loopStartedAt)} (${formatTime(state.loopStartedAt)} → ${formatTime(now)})`);
+						log(`⏱ Total: ${formatDuration(totalElapsed())} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
 					}
 					ctx.ui.notify(`✅ All ${state.commitList.length} commit(s) approved`, "success");
 					await stopLoop(ctx);
@@ -229,6 +326,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function startManualInnerLoop(feedback: string, ctx: any): Promise<void> {
+		resumeTimer();
 		state.userFeedback = feedback;
 		state.round = 0;
 		state.manualInnerRound = 0;
@@ -247,7 +345,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function afterManualInnerLoop(ctx: any): Promise<void> {
-		const cwd = loopCommandCtx?.cwd || ctx?.cwd;
+		const useCtx = loopCommandCtx || ctx;
+		const cwd = useCtx?.cwd;
 		if (!cwd) return;
 
 		// Re-derive commit list after potential rebase
@@ -268,13 +367,25 @@ export default function (pi: ExtensionAPI) {
 			// Rebuild patchIdMap
 			state.patchIdMap = buildPatchIdMap(cwd, newList);
 
+			// Split/squash: original commit's patch-id vanished
 			if (lost.length > 0) {
-				log(`⚠️ ${lost.length} commit(s) were split or squashed — review the new commit list`);
-				// Let user pick via the normal Jump flow
+				log(`⚠️ ${lost.length} commit(s) were split or squashed`);
+				const items = newList.map((s, i) => {
+					const subj = getCommitSubject(cwd, s);
+					return `${i + 1}. ${s.slice(0, 7)} ${subj}`;
+				});
+				const picked = await useCtx.ui.select(
+					"Commit was split/squashed — pick which to review next",
+					items,
+				);
+				if (picked) {
+					const idx = items.indexOf(picked);
+					if (idx >= 0) state.currentCommitIdx = idx;
+				}
 			}
 		}
 
-		await showCommitForReview(loopCommandCtx || ctx);
+		await showCommitForReview(useCtx);
 	}
 
 	// ── Transitions ─────────────────────────────────────
@@ -403,10 +514,12 @@ export default function (pi: ExtensionAPI) {
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
+		resumeTimer();
 		stopStatusTimer();
 		state.phase = "idle";
 		state.overseerLeafId = null;
 		loopCommandCtx = null;
+		pauseStartedAt = 0;
 		ctx.ui.setStatus("loop", "");
 		restoreEditorEnv();
 		if (!wasRunning || !state.originalModelStr) return;
@@ -417,8 +530,8 @@ export default function (pi: ExtensionAPI) {
 		pi.setThinkingLevel(state.originalThinking);
 		log(`Loop ended. Restored model: ${state.originalModelStr} · thinking: ${state.originalThinking}`);
 		if (state.loopStartedAt) {
-			const now = Date.now();
-			log(`⏱ Total: ${formatDuration(now - state.loopStartedAt)} (${formatTime(state.loopStartedAt)} → ${formatTime(now)})`);
+			const elapsed = totalElapsed();
+			log(`⏱ Total: ${formatDuration(elapsed)} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
 		}
 	}
 
