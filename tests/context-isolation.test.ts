@@ -175,7 +175,13 @@ const workhorseText = [
 ].join("\n");
 
 test("fresh mode resets workhorse and next overseer to the same base context", async () => {
+	// Ensure fresh mode regardless of user's settings.json
+	const { loadConfig, saveConfigField } = await import("../config.ts");
+	const savedMode = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "fresh");
+
 	const h = createHarness();
+	try {
 	await h.start();
 
 	assert.equal(h.prompts.length, 1, "round 1 overseer prompt sent");
@@ -207,4 +213,7 @@ test("fresh mode resets workhorse and next overseer to the same base context", a
 		baseContext,
 		"fresh round 2 overseer should also run from same base context",
 	);
+	} finally {
+		saveConfigField("reviewMode", savedMode);
+	}
 });

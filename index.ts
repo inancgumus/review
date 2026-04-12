@@ -283,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 	async function startManualInnerLoop(feedback: string, ctx: any): Promise<void> {
 		resumeTimer();
 		state.userFeedback = feedback;
-		state.round = 0;
+		state.round = 1;
 		state.manualInnerRound = 0;
 		state.workhorseSummaries = [];
 		state.overseerLeafId = null;
@@ -424,7 +424,7 @@ export default function (pi: ExtensionAPI) {
 		if (rr) rr.endedAt = now;
 		if (state.mode !== "manual" && state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
-		state.round++;
+		if (state.mode !== "manual") state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}
 
@@ -501,8 +501,9 @@ export default function (pi: ExtensionAPI) {
 			recordOverseer(state.round, "changes_requested", text);
 			const summary = sanitize(stripVerdict(text));
 			if (state.mode !== "manual") log(`❌ CHANGES REQUESTED\n${summary}`);
+			if (state.mode === "manual") state.round++;
 			deferIf("reviewing", () => {
-				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
+				if (state.round >= state.maxRounds) { ctx.ui.notify(`Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
 				void continueLoop(ctx, { type: "workhorse", overseerText: text });
 			});
 			return;
