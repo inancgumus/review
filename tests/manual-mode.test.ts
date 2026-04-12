@@ -268,26 +268,17 @@ test("/loop:manual uses incremental reviewMode", async () => {
 	}
 });
 
-test("/loop:manual resets context between feedback cycles", async () => {
+test("/loop:manual inner loop completion ends the loop", async () => {
 	const repo = createTempRepo();
 	try {
 		const sha = addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
 
 		const h = createHarness(repo.cwd);
-		const navTargets: string[] = [];
-		h.ctx.navigateTree = async (id: string) => { navTargets.push(id); return { cancelled: false }; };
-
-		// Cycle 1: feedback
 		h.reviewResults.push({ approved: false, feedback: "fix error handling" });
-		// Cycle 2: new feedback
-		h.reviewResults.push({ approved: false, feedback: "also fix the logging" });
 
 		await h.commands.get("loop:manual")!(sha, h.ctx);
 
-		const anchorId = navTargets[0];
-		assert.ok(anchorId, "should navigate to anchor in cycle 1");
-
-		// Complete cycle 1
+		// Complete the inner loop
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-wh",
 			type: "message",
@@ -301,18 +292,21 @@ test("/loop:manual resets context between feedback cycles", async () => {
 			type: "message",
 			message: { role: "assistant", content: "All good.\n\nVERDICT: APPROVED", stopReason: "end_turn" },
 		});
-
-		const navCountBefore = navTargets.length;
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait(300);
 
-		// Cycle 2 should navigate to anchor (context reset)
-		const cycle2Navs = navTargets.slice(navCountBefore);
-		const anchorNavs = cycle2Navs.filter(id => id === anchorId);
-		assert.ok(anchorNavs.length >= 1, "should navigate to anchor for cycle 2");
+		// Loop should have ended (single commit, inner loop done)
+		// Sending another agent_end should NOT trigger loop behavior
+		const msgCountBefore = h.userMessages.length;
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-ghost",
+			type: "message",
+			message: { role: "assistant", content: "Some response", stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
 
-		const lastPrompt = h.userMessages[h.userMessages.length - 1];
-		assert.match(lastPrompt, /also fix the logging/, "cycle 2 workhorse gets new feedback");
+		assert.equal(h.userMessages.length, msgCountBefore, "no ghost loop after stopLoop");
 	} finally {
 		repo.cleanup();
 	}

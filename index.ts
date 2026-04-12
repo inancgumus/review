@@ -254,7 +254,6 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function showCommitForReview(ctx: any): Promise<void> {
-		pauseTimer();
 		if (!recoverGitState(ctx)) { await stopLoop(ctx); return; }
 
 		while (true) {
@@ -298,52 +297,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function afterManualInnerLoop(ctx: any): Promise<void> {
+		if (state.phase === "idle") return; // already stopped
+		// Single commit review — inner loop done means we're done
 		const useCtx = loopCommandCtx || ctx;
-		const cwd = useCtx?.cwd;
-		if (!cwd) return;
-
-		if (state.manualBase) {
-			const oldCount = state.commitList.length;
-			const range = `${state.manualBase}..HEAD`;
-			const { newList, remap, lost } = remapAfterRebase(cwd, range, state.patchIdMap);
-
-			const oldSha = state.commitList[state.currentCommitIdx];
-			state.commitList = newList;
-
-			// Remap current commit index via patch-id match
-			const newSha = remap.get(oldSha);
-			if (newSha) {
-				const newIdx = newList.indexOf(newSha);
-				if (newIdx >= 0) state.currentCommitIdx = newIdx;
-			}
-			// Patch-id changed but count is same → commit was modified (expected after fix).
-			// Keep same index — it's the same logical commit with new content.
-
-			// Clamp index in case commits were removed
-			if (state.currentCommitIdx >= newList.length) {
-				state.currentCommitIdx = Math.max(0, newList.length - 1);
-			}
-
-			state.patchIdMap = buildPatchIdMap(cwd, newList);
-
-			// Only show split/squash picker when commit count actually changed
-			if (lost.length > 0 && newList.length !== oldCount) {
-				const items = newList.map((s, i) => {
-					const subj = getCommitSubject(cwd, s);
-					return `${i + 1}. ${s.slice(0, 7)} ${subj}`;
-				});
-				const picked = await useCtx.ui.select(
-					"Commit was split/squashed — pick which to review next",
-					items,
-				);
-				if (picked) {
-					const idx = items.indexOf(picked);
-					if (idx >= 0) state.currentCommitIdx = idx;
-				}
-			}
-		}
-
-		await showCommitForReview(useCtx);
+		await stopLoop(useCtx);
 	}
 
 	// ── Transitions ─────────────────────────────────────
@@ -472,9 +429,13 @@ export default function (pi: ExtensionAPI) {
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
+		const mode = state.mode;
+
+		// Set idle FIRST to prevent any deferred callbacks from running
+		state.phase = "idle";
 
 		// Clean up broken git state left by inner loop
-		if (state.mode === "manual" && wasRunning) {
+		if (mode === "manual" && wasRunning) {
 			const gitIssue = checkGitState(ctx.cwd);
 			if (gitIssue) {
 				if (!fixGitState(ctx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
@@ -485,7 +446,6 @@ export default function (pi: ExtensionAPI) {
 
 		resumeTimer();
 		stopStatusTimer();
-		state.phase = "idle";
 		state.overseerLeafId = null;
 		loopCommandCtx = null;
 		pauseStartedAt = 0;
@@ -497,11 +457,8 @@ export default function (pi: ExtensionAPI) {
 		if (!model) { ctx.ui.notify(`Could not restore model: ${state.originalModelStr}`, "error"); return; }
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking);
-		log(`Loop ended. Restored model: ${state.originalModelStr} · thinking: ${state.originalThinking}`);
-		if (state.loopStartedAt) {
-			const elapsed = totalElapsed();
-			log(`⏱ Total: ${formatDuration(elapsed)} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
-		}
+		const elapsed = state.loopStartedAt ? formatDuration(totalElapsed()) : "0s";
+		log(`Loop ended. ${elapsed} elapsed. Restored ${state.originalModelStr}.`);
 	}
 
 	// ── agent_end ───────────────────────────────────────
@@ -531,6 +488,7 @@ export default function (pi: ExtensionAPI) {
 			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
 			if (state.mode === "manual") {
+				pauseTimer();
 				deferIf("reviewing", () => void afterManualInnerLoop(ctx));
 				return;
 			}
@@ -677,6 +635,7 @@ export default function (pi: ExtensionAPI) {
 
 			rememberAnchor(ctx);
 			blockInteractiveEditors();
+			pauseTimer(); // timer starts paused — only counts inner loop time
 			startStatusTimer(ctx);
 			await showCommitForReview(ctx);
 		},

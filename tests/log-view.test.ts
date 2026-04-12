@@ -807,10 +807,9 @@ test("chat log messages include round timing and total timing", async () => {
 	const allLogs = h.sentMessages
 		.filter((m: any) => m.customType === "loop-log")
 		.map((m: any) => String(m.content));
-	const totalLog = allLogs.find((l: string) => l.includes("Total:"));
-	assert.ok(totalLog, "stopLoop logs total elapsed time");
-	assert.match(totalLog!, /\u23f1 Total:/, "total timing uses stopwatch emoji");
-	assert.match(totalLog!, /\u2192/, "total timing includes arrow between start and end");
+	const endLog = allLogs.find((l: string) => l.includes("Loop ended"));
+	assert.ok(endLog, "stopLoop logs loop ended message");
+	assert.match(endLog!, /elapsed/, "end message includes elapsed time");
 });
 
 test("chat log request message includes start time", async () => {
