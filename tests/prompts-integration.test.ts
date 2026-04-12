@@ -1,12 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir, homedir } from "node:os";
 import loopExtension from "../index.ts";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
-import { saveConfigField, loadConfig } from "../config.ts";
+
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+function readSettings(): any {
+	try { return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")); }
+	catch { return {}; }
+}
+
+function writeSettings(settings: any): void {
+	mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
+	writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+}
+
+function getLoopSetting<T>(key: string, fallback: T): T {
+	const settings = readSettings();
+	return settings?.loop?.[key] ?? fallback;
+}
+
+function setLoopSetting(key: string, value: unknown): void {
+	const settings = readSettings();
+	if (!settings.loop) settings.loop = {};
+	settings.loop[key] = value;
+	writeSettings(settings);
+}
 
 function wait(ms = 300): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -164,8 +187,8 @@ test("exec orchestrator prompt instructs one step at a time", async () => {
 });
 
 test("exec orchestrator round 2 includes workhorse summaries", async () => {
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "fresh");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "fresh");
 	const h = createHarness();
 	try {
 	await h.commands.get("loop:exec")!("implement auth", h.ctx);
@@ -184,7 +207,7 @@ test("exec orchestrator round 2 includes workhorse summaries", async () => {
 	assert.match(round2, /Created User struct/, "includes workhorse summary from round 1");
 	await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 	}
 });
 
@@ -259,8 +282,8 @@ test("review workhorse prompt includes Overseer Feedback heading and V_FIXES_COM
 
 test("incremental review round 2 includes unchanged commits warning", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		// Create 3 commits so extractTaggedSHAs finds multiple
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
@@ -292,15 +315,15 @@ test("incremental review round 2 includes unchanged commits warning", async () =
 		assert.match(round2, /unchanged|not modified/i, "warns about unchanged commits");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("incremental review round 2 without unchanged commits has no warning (single SHA)", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
 
@@ -320,15 +343,15 @@ test("incremental review round 2 without unchanged commits has no warning (singl
 		assert.doesNotMatch(round2, /unchanged/i, "no unchanged warning with single SHA");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("incremental review round 2 includes changed context files", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-prompts-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const file = join(dir, "auth.go");
 		writeFileSync(file, "func auth() { old }");
@@ -353,15 +376,15 @@ test("incremental review round 2 includes changed context files", async () => {
 		assert.match(round2, /func auth\(\) \{ fixed \}/, "includes updated file contents");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("incremental review round 2 excludes context when no files changed", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-prompts-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const file = join(dir, "auth.go");
 		writeFileSync(file, "func auth() {}");
@@ -381,15 +404,15 @@ test("incremental review round 2 excludes context when no files changed", async 
 		assert.doesNotMatch(round2, /Context files/i, "no context section when nothing changed");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("fresh review round 2 does NOT include unchanged commits warning", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "fresh");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "fresh");
 	try {
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
 		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
@@ -410,7 +433,7 @@ test("fresh review round 2 does NOT include unchanged commits warning", async ()
 		assert.doesNotMatch(round2, /unchanged.*commit/i, "fresh mode ignores unchanged commits");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
@@ -578,8 +601,8 @@ test("review workhorse prompt excludes fixup/amend/rebase by default", async () 
 });
 
 test("review workhorse prompt includes fixup/amend/rebase when rewriteHistory is true", async () => {
-	const saved = loadConfig(process.cwd()).rewriteHistory;
-	saveConfigField("rewriteHistory", true);
+	const saved = getLoopSetting("rewriteHistory", false);
+	setLoopSetting("rewriteHistory", true);
 	try {
 		const h = createHarness();
 		await h.commands.get("loop")!("check auth", h.ctx);
@@ -594,7 +617,7 @@ test("review workhorse prompt includes fixup/amend/rebase when rewriteHistory is
 		assert.ok(workhorse.includes(V_FIXES_COMPLETE), "still has V_FIXES_COMPLETE");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("rewriteHistory", saved);
+		setLoopSetting("rewriteHistory", saved);
 	}
 });
 
@@ -602,8 +625,8 @@ test("review workhorse prompt includes fixup/amend/rebase when rewriteHistory is
 
 test("unchanged commits detected: logMessages shows warning when workhorse doesn't fix", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
 		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add request handler");
@@ -634,15 +657,15 @@ test("unchanged commits detected: logMessages shows warning when workhorse doesn
 		assert.match(round2, /unchanged|not modified/i, "round 2 warns about unchanged commits");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("no unchanged warning when workhorse actually fixes commits", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
 		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
@@ -677,15 +700,15 @@ test("no unchanged warning when workhorse actually fixes commits", async () => {
 		assert.doesNotMatch(round2, /unchanged/i, "round 2 does not warn about unchanged");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("backtick SHAs near commit keyword triggers unchanged detection", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
 		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
@@ -709,15 +732,15 @@ test("backtick SHAs near commit keyword triggers unchanged detection", async () 
 		assert.ok(hasWarning, "unchanged warning appears");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("short hex under 7 chars ignored by SHA extraction — no snapshot", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
 		addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
@@ -740,15 +763,15 @@ test("short hex under 7 chars ignored by SHA extraction — no snapshot", async 
 		assert.doesNotMatch(round2, /unchanged/i, "no unchanged warning");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });
 
 test("single tagged SHA skips unchanged detection — no snapshot", async () => {
 	const repo = createTempRepo();
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
 
@@ -766,7 +789,7 @@ test("single tagged SHA skips unchanged detection — no snapshot", async () => 
 		assert.ok(!hasSnapshot, "should not snapshot with single SHA");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		repo.cleanup();
 	}
 });

@@ -1,11 +1,34 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir, homedir } from "node:os";
 import loopExtension from "../index.ts";
 import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
-import { saveConfigField, loadConfig } from "../config.ts";
+
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+function readSettings(): any {
+	try { return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")); }
+	catch { return {}; }
+}
+
+function writeSettings(settings: any): void {
+	mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
+	writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+}
+
+function getLoopSetting<T>(key: string, fallback: T): T {
+	const settings = readSettings();
+	return settings?.loop?.[key] ?? fallback;
+}
+
+function setLoopSetting(key: string, value: unknown): void {
+	const settings = readSettings();
+	if (!settings.loop) settings.loop = {};
+	settings.loop[key] = value;
+	writeSettings(settings);
+}
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -128,8 +151,8 @@ function createHarness(cwdOverride?: string) {
 
 test("context hashing is consistent for same content", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const file = join(dir, "auth.go");
 		writeFileSync(file, "func auth() {}");
@@ -155,15 +178,15 @@ test("context hashing is consistent for same content", async () => {
 		assert.doesNotMatch(round2, /Updated context files/i, "no context update section");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("context hashing detects changed content", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const file = join(dir, "auth.go");
 		writeFileSync(file, "func auth() { old }");
@@ -192,15 +215,15 @@ test("context hashing detects changed content", async () => {
 		assert.match(round2, /func auth\(\) \{ fixed \}/, "includes new file content");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("directory @paths detect changes in child files", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sub = join(dir, "pkg");
 		mkdirSync(sub);
@@ -226,15 +249,15 @@ test("directory @paths detect changes in child files", async () => {
 		assert.match(round2, /func a\(\) \{ fixed \}/, "includes updated child content");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("directory @paths unchanged when no child files change", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const sub = join(dir, "pkg");
 		mkdirSync(sub);
@@ -255,15 +278,15 @@ test("directory @paths unchanged when no child files change", async () => {
 		assert.ok(!hasChangedLog, "no changed @paths when directory children unchanged");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("missing @paths are silently skipped", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const realFile = join(dir, "real.go");
 		writeFileSync(realFile, "func real() { old }");
@@ -293,15 +316,15 @@ test("missing @paths are silently skipped", async () => {
 		assert.ok(round2, "round 2 prompt exists — no crash from missing path");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("only modified files are reported as changed", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
-	const saved = loadConfig(process.cwd()).reviewMode;
-	saveConfigField("reviewMode", "incremental");
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
 	try {
 		const fileA = join(dir, "a.go");
 		const fileB = join(dir, "b.go");
@@ -326,7 +349,7 @@ test("only modified files are reported as changed", async () => {
 		assert.match(changedLog!, /1\/2/, "shows 1/2 (only modified file reported)");
 		await h.stopLoop();
 	} finally {
-		saveConfigField("reviewMode", saved);
+		setLoopSetting("reviewMode", saved);
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
