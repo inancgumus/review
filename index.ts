@@ -22,7 +22,7 @@ import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js"
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
 import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
-import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState } from "./git-manual.js";
+import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState, gitToplevel } from "./git-manual.js";
 import { reviewCommitInEditor } from "./diff-review.js";
 import { execSync } from "node:child_process";
 
@@ -570,7 +570,9 @@ export default function (pi: ExtensionAPI) {
 		description: "Manual review. Usage: /loop:manual [sha]",
 		handler: async (args, ctx) => {
 			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
-
+			// ctx.cwd may not point to a git repo (pi sets it to ~ when launched with a path arg).
+			// Resolve the actual git toplevel so manual mode's execSync calls work.
+			ctx.cwd = gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 			const cfg = loadConfig(ctx.cwd);
 			const trimmedArgs = (args || "").trim();
 

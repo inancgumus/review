@@ -5,6 +5,32 @@ import { join } from "node:path";
 const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000, stdio: ["pipe", "pipe", "pipe"] as const });
 
 /**
+ * Resolve the git toplevel. Tries cwd, process.cwd(), then extracts
+ * the project path from the first user message (pi passes the opened dir as the first message).
+ */
+export function gitToplevel(cwd: string, sessionEntries?: any[]): string {
+	for (const dir of [cwd, process.cwd()]) {
+		try { return execSync("git rev-parse --show-toplevel", opts(dir)).trim(); }
+		catch { /* not a git repo */ }
+	}
+	if (sessionEntries) {
+		for (const e of sessionEntries) {
+			if (e.type !== "message" || e.message?.role !== "user") continue;
+			const content = e.message.content;
+			const text = typeof content === "string" ? content : Array.isArray(content) ? content.find((c: any) => c.type === "text")?.text : null;
+			if (!text) continue;
+			const candidate = text.trim();
+			if (candidate.startsWith("/") && existsSync(candidate)) {
+				try { return execSync("git rev-parse --show-toplevel", opts(candidate)).trim(); }
+				catch { /* not a git repo */ }
+			}
+			break; // only check first user message
+		}
+	}
+	return cwd;
+}
+
+/**
  * If rangeArg is non-empty, return it as-is.
  * Otherwise detect merge-base with main (fallback master) and return `<base>..HEAD`.
  */
