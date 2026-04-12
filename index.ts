@@ -21,8 +21,7 @@ import { matchVerdict, hasFixesComplete, stripVerdict, V_APPROVED, V_CHANGES, V_
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
-import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
-import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState, gitToplevel } from "./git-manual.js";
+import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase, resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState, gitToplevel } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
 import { execSync } from "node:child_process";
 
