@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { promptSets } from "../prompts.ts";
+import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
 const baseParams = {
 	focus: "check auth",
@@ -68,7 +69,7 @@ test("manual workhorse prompt includes FIXES_COMPLETE", () => {
 		1,
 	);
 
-	assert.match(prompt, /FIXES_COMPLETE/, "includes FIXES_COMPLETE");
+	assert.ok(prompt.includes(V_FIXES_COMPLETE), "includes FIXES_COMPLETE");
 });
 
 test("manual workhorse prompt includes fixup/amend git rules", () => {
@@ -90,7 +91,7 @@ test("manual workhorse prompt strips VERDICT from input", () => {
 		1,
 	);
 
-	assert.doesNotMatch(prompt, /VERDICT: CHANGES_REQUESTED/, "strips verdict");
+	assert.ok(!prompt.includes(V_CHANGES), "strips verdict");
 	assert.match(prompt, /Fix the bug/, "keeps the actual feedback");
 });
 
@@ -102,7 +103,7 @@ test("manual workhorse prompt without COMMIT prefix uses generic rules", () => {
 	);
 
 	assert.match(prompt, /referenced in the feedback above/, "uses generic SHA reference");
-	assert.match(prompt, /FIXES_COMPLETE/, "still includes FIXES_COMPLETE");
+	assert.ok(prompt.includes(V_FIXES_COMPLETE), "still includes FIXES_COMPLETE");
 });
 
 test("promptSets.manual exists and works", () => {

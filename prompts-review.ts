@@ -1,6 +1,7 @@
 import { expandContextPaths } from "./context.js";
 import { sanitize } from "./session.js";
 import type { PromptSet, OverseerPromptParams } from "./types.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, CHANGES_STRIP_RE } from "./verdicts.js";
 
 export const reviewPrompts: PromptSet = {
 	buildOverseerPrompt: reviewOverseerPrompt,
@@ -39,8 +40,8 @@ function reviewIncrementalPrompt(round: number, unchangedCommits: string[], chan
 	parts.push(
 		"",
 		"End with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
+		`${V_APPROVED}`,
+		`${V_CHANGES}`,
 	);
 
 	return parts.join("\n");
@@ -69,8 +70,8 @@ function reviewFullPrompt(p: OverseerPromptParams): string {
 		"Separate blocking issues (must fix) from nitpicks (optional).",
 		"",
 		"End your review with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
+		`${V_APPROVED}`,
+		`${V_CHANGES}`,
 	];
 
 	const ctx = expandContextPaths(p.contextPaths);
@@ -95,7 +96,7 @@ function reviewFullPrompt(p: OverseerPromptParams): string {
 }
 
 function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string {
-	const cleaned = sanitize(overseerText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
+	const cleaned = sanitize(overseerText.replace(CHANGES_STRIP_RE, "").trim());
 	const rewrite = opts?.rewriteHistory === true;
 	const parts = [
 		`## Overseer Feedback — Round ${round}`,
@@ -145,7 +146,7 @@ function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 		"",
 		"When you have addressed ALL blocking issues (fixed or explained why you disagree),",
 		"end your response with exactly:",
-		"FIXES_COMPLETE",
+		`${V_FIXES_COMPLETE}`,
 		expandContextPaths(contextPaths),
 	);
 

@@ -4,6 +4,7 @@ import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promptSets } from "../prompts.ts";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
 test("exec orchestrator prompt includes orchestrator role and drip-feed instruction", () => {
 	const prompt = promptSets.exec.buildOverseerPrompt({
@@ -17,8 +18,8 @@ test("exec orchestrator prompt includes orchestrator role and drip-feed instruct
 	assert.match(prompt, /orchestrat/i, "mentions orchestrator role");
 	assert.match(prompt, /implement the auth module/, "includes focus");
 	assert.match(prompt, /one.*(step|part)/i, "instructs to drip-feed one step at a time");
-	assert.match(prompt, /VERDICT: APPROVED/, "includes approved verdict marker");
-	assert.match(prompt, /VERDICT: CHANGES_REQUESTED/, "includes changes requested marker");
+	assert.ok(prompt.includes(V_APPROVED), "includes approved verdict marker");
+	assert.ok(prompt.includes(V_CHANGES), "includes changes requested marker");
 	assert.match(prompt, /do not.*(modify|edit|write)/i, "forbids file modifications");
 });
 
@@ -42,8 +43,8 @@ test("exec implementer prompt includes orchestrator instructions and FIXES_COMPL
 	);
 
 	assert.match(prompt, /create the User struct/, "includes orchestrator's instructions");
-	assert.match(prompt, /FIXES_COMPLETE/, "uses FIXES_COMPLETE marker");
-	assert.doesNotMatch(prompt, /VERDICT: CHANGES_REQUESTED/, "strips verdict from orchestrator text");
+	assert.ok(prompt.includes(V_FIXES_COMPLETE), "uses FIXES_COMPLETE marker");
+	assert.ok(!prompt.includes(V_CHANGES), "strips verdict from orchestrator text");
 	assert.match(prompt, /git commit/, "includes git commit instructions");
 	assert.match(prompt, /ONLY.*single step/i, "restricts to single step");
 	assert.match(prompt, /not.*subagent/i, "forbids subagents");
@@ -66,7 +67,7 @@ test("review prompt set still works unchanged", () => {
 
 	assert.match(prompt, /code overseer/i, "uses code overseer role");
 	assert.match(prompt, /check auth/, "includes focus");
-	assert.match(prompt, /VERDICT: APPROVED/, "includes verdict markers");
+	assert.ok(prompt.includes(V_APPROVED), "includes verdict markers");
 });
 
 test("incremental review round 2 includes unchanged commits warning", () => {
@@ -156,5 +157,5 @@ test("review workhorse prompt set still works unchanged", () => {
 
 	assert.match(prompt, /Overseer Feedback/, "uses overseer feedback heading");
 	assert.match(prompt, /Fix the race condition/, "includes overseer text");
-	assert.match(prompt, /FIXES_COMPLETE/, "uses FIXES_COMPLETE marker");
+	assert.ok(prompt.includes(V_FIXES_COMPLETE), "uses FIXES_COMPLETE marker");
 });

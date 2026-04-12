@@ -1,5 +1,6 @@
 import type { RoundResult } from "./types.js";
 import { loadPiAgent, loadTui } from "./tui-runtime.js";
+import { VERDICT_STRIP_RE } from "./verdicts.js";
 
 function formatDuration(ms: number): string {
 	var s = Math.floor(ms / 1000);
@@ -59,7 +60,7 @@ function pad(
 
 function cleanOverseerText(text: string): string {
 	return text
-		.replace(/\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}(APPROVED|CHANGES_REQUESTED)\*{0,2}/gi, "")
+		.replace(VERDICT_STRIP_RE, "")
 		.trim();
 }
 

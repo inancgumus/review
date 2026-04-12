@@ -3,6 +3,7 @@ import test from "node:test";
 import { execSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 import { tmpdir } from "node:os";
 import loopExtension from "../index.ts";
 
@@ -160,7 +161,7 @@ test("/loop:manual feedback starts workhorse with commit SHA", async () => {
 
 		assert.equal(h.userMessages.length, 1, "one workhorse prompt sent");
 		assert.match(h.userMessages[0], /fix the error handling/, "includes feedback text");
-		assert.match(h.userMessages[0], /FIXES_COMPLETE/, "has FIXES_COMPLETE marker");
+		assert.ok(h.userMessages[0].includes(V_FIXES_COMPLETE), "has FIXES_COMPLETE marker");
 		assert.match(h.userMessages[0], new RegExp(sha.slice(0, 7)), "includes commit SHA");
 	} finally {
 		repo.cleanup();
@@ -187,7 +188,7 @@ test("/loop:manual overseer approval returns to editor review", async () => {
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-wh-1",
 			type: "message",
-			message: { role: "assistant", content: "Fixed.\n\nFIXES_COMPLETE", stopReason: "end_turn" },
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait();
@@ -195,7 +196,7 @@ test("/loop:manual overseer approval returns to editor review", async () => {
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-os-1",
 			type: "message",
-			message: { role: "assistant", content: "All good.\n\nVERDICT: APPROVED", stopReason: "end_turn" },
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait(300);
@@ -220,7 +221,7 @@ test("/loop:manual overseer changes_requested continues inner loop", async () =>
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-wh-1",
 			type: "message",
-			message: { role: "assistant", content: "Attempted fix.\n\nFIXES_COMPLETE", stopReason: "end_turn" },
+			message: { role: "assistant", content: `Attempted fix.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait();
@@ -229,13 +230,13 @@ test("/loop:manual overseer changes_requested continues inner loop", async () =>
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-os-1",
 			type: "message",
-			message: { role: "assistant", content: "The fix is incomplete.\n\nVERDICT: CHANGES_REQUESTED", stopReason: "end_turn" },
+			message: { role: "assistant", content: `The fix is incomplete.\n\n${V_CHANGES}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait();
 
 		const lastMsg = h.userMessages[h.userMessages.length - 1];
-		assert.match(lastMsg, /FIXES_COMPLETE/, "workhorse prompted again");
+		assert.ok(lastMsg.includes(V_FIXES_COMPLETE), "workhorse prompted again");
 		assert.match(lastMsg, /fix is incomplete/i, "includes overseer feedback");
 	} finally {
 		repo.cleanup();
@@ -256,7 +257,7 @@ test("/loop:manual uses incremental reviewMode", async () => {
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-wh",
 			type: "message",
-			message: { role: "assistant", content: "Fixed.\n\nFIXES_COMPLETE", stopReason: "end_turn" },
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait();
@@ -283,7 +284,7 @@ test("/loop:manual inner loop completion ends the loop", async () => {
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-wh",
 			type: "message",
-			message: { role: "assistant", content: "Fixed.\n\nFIXES_COMPLETE", stopReason: "end_turn" },
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait();
@@ -291,7 +292,7 @@ test("/loop:manual inner loop completion ends the loop", async () => {
 		h.ctx.sessionManager.getEntries().push({
 			id: "assistant-os",
 			type: "message",
-			message: { role: "assistant", content: "All good.\n\nVERDICT: APPROVED", stopReason: "end_turn" },
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
 		});
 		h.events.get("agent_end")!({}, h.ctx);
 		await wait(300);

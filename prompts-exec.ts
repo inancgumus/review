@@ -1,6 +1,7 @@
 import { expandContextPaths } from "./context.js";
 import { sanitize } from "./session.js";
 import type { PromptSet, OverseerPromptParams } from "./types.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, CHANGES_STRIP_RE } from "./verdicts.js";
 
 export const execPrompts: PromptSet = {
 	buildOverseerPrompt: execOverseerPrompt,
@@ -23,8 +24,8 @@ function execIncrementalPrompt(round: number): string {
 		"A verdict with zero tool calls is a rubber-stamp — that is unacceptable.",
 		"",
 		"End with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
+		`${V_APPROVED}`,
+		`${V_CHANGES}`,
 	].join("\n");
 }
 
@@ -56,10 +57,10 @@ function execFullPrompt(p: OverseerPromptParams): string {
 		"- A verdict with zero tool calls is a rubber-stamp — that is unacceptable.",
 		"",
 		"If ALL steps in the plan are correctly implemented AND verified:",
-		"VERDICT: APPROVED",
+		`${V_APPROVED}`,
 		"",
 		"If the workhorse needs to do work (implement next step or redo current):",
-		"VERDICT: CHANGES_REQUESTED",
+		`${V_CHANGES}`,
 	];
 
 	const ctx = expandContextPaths(p.contextPaths);
@@ -84,7 +85,7 @@ function execFullPrompt(p: OverseerPromptParams): string {
 }
 
 function execWorkhorsePrompt(overseerText: string, _contextPaths: string[], round: number): string {
-	const cleaned = sanitize(overseerText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
+	const cleaned = sanitize(overseerText.replace(CHANGES_STRIP_RE, "").trim());
 	return [
 		`## Workhorse Task — Round ${round}`,
 		"",
@@ -112,6 +113,6 @@ function execWorkhorsePrompt(overseerText: string, _contextPaths: string[], roun
 		"",
 		"When you have completed the work,",
 		"end your response with exactly:",
-		"FIXES_COMPLETE",
+		`${V_FIXES_COMPLETE}`,
 	].join("\n");
 }

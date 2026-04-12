@@ -1,4 +1,5 @@
 import { extractText } from "./session.js";
+import { matchVerdict } from "./verdicts.js";
 
 interface RecoveredState {
 	focus: string;
@@ -31,9 +32,10 @@ export function reconstructState(ctx: any): RecoveredState | null {
 		if (msg.role !== "assistant" || lastOverseerRound !== 0) continue;
 
 		const text = extractText(msg.content);
-		if (/VERDICT:\s*\*{0,2}APPROVED\*{0,2}/i.test(text)) return null;
+		const verdict = matchVerdict(text);
+		if (verdict === "approved") return null;
 
-		if (/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/i.test(text)) {
+		if (verdict === "changes_requested") {
 			lastOverseerText = text;
 			overseerLeafId = e.id;
 			lastOverseerRound = findOverseerRound(entries, i);

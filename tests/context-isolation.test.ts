@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import loopExtension from "../index.ts";
+import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -163,7 +164,7 @@ const overseerText = [
 	"",
 	"- add a zero-divisor guard",
 	"",
-	"**VERDICT:** CHANGES_REQUESTED",
+	`${V_CHANGES}`,
 ].join("\n");
 
 const workhorseText = [
@@ -171,7 +172,7 @@ const workhorseText = [
 	"",
 	"Added the guard and a regression test.",
 	"",
-	"FIXES_COMPLETE",
+	`${V_FIXES_COMPLETE}`,
 ].join("\n");
 
 test("fresh mode resets workhorse and next overseer to the same base context", async () => {

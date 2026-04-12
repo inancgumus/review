@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import loopExtension from "../index.ts";
+import { V_CHANGES } from "../verdicts.ts";
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -92,7 +93,7 @@ test("/loop:exec workhorse uses workhorse prompt", async () => {
 		type: "message",
 		message: {
 			role: "assistant",
-			content: "Implement step 1: create the routes\n\nVERDICT: CHANGES_REQUESTED",
+			content: `Implement step 1: create the routes\n\n${V_CHANGES}`,
 			stopReason: "end_turn",
 		},
 	});
@@ -122,7 +123,7 @@ test("/loop:exec workhorse prompt does not contain @path context files", async (
 		type: "message",
 		message: {
 			role: "assistant",
-			content: "Create the User model in models/user.go\n\nVERDICT: CHANGES_REQUESTED",
+			content: `Create the User model in models/user.go\n\n${V_CHANGES}`,
 			stopReason: "end_turn",
 		},
 	});
@@ -161,7 +162,7 @@ test("/loop:exec workhorse prompt forbids subagents and multi-step", async () =>
 		type: "message",
 		message: {
 			role: "assistant",
-			content: "Do X\n\nVERDICT: CHANGES_REQUESTED",
+			content: `Do X\n\n${V_CHANGES}`,
 			stopReason: "end_turn",
 		},
 	});

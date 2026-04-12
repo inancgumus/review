@@ -1,6 +1,7 @@
 import { expandContextPaths } from "./context.js";
 import { sanitize } from "./session.js";
 import type { PromptSet, OverseerPromptParams } from "./types.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, CHANGES_STRIP_RE } from "./verdicts.js";
 
 export const manualPrompts: PromptSet = {
 	buildOverseerPrompt: manualOverseerPrompt,
@@ -22,8 +23,8 @@ function manualOverseerPrompt(p: OverseerPromptParams): string {
 			"Do NOT add your own issues. Do NOT review beyond the user's feedback.",
 			"",
 			"End with exactly one of:",
-			"VERDICT: APPROVED",
-			"VERDICT: CHANGES_REQUESTED",
+			`${V_APPROVED}`,
+			`${V_CHANGES}`,
 		].join("\n");
 	}
 
@@ -38,8 +39,8 @@ function manualOverseerPrompt(p: OverseerPromptParams): string {
 		"Read the files, run git commands, verify each point was addressed.",
 		"",
 		"End with exactly one of:",
-		"VERDICT: APPROVED",
-		"VERDICT: CHANGES_REQUESTED",
+		`${V_APPROVED}`,
+		`${V_CHANGES}`,
 	].join("\n");
 }
 
@@ -52,7 +53,7 @@ function manualWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 		feedbackText = overseerText.slice(commitMatch[0].length);
 	}
 
-	const cleaned = sanitize(feedbackText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
+	const cleaned = sanitize(feedbackText.replace(CHANGES_STRIP_RE, "").trim());
 
 	const parts = [
 		`## Fix Issues — Round ${round}`,
@@ -106,7 +107,7 @@ function manualWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 		"",
 		"When you have addressed ALL issues (fixed or explained why you disagree),",
 		"end your response with exactly:",
-		"FIXES_COMPLETE",
+		`${V_FIXES_COMPLETE}`,
 		expandContextPaths(contextPaths),
 	);
 

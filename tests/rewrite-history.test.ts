@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { promptSets } from "../prompts.ts";
+import { V_FIXES_COMPLETE } from "../verdicts.ts";
 
 test("review workhorse prompt excludes fixup/amend/rebase rules by default", () => {
 	const prompt = promptSets.review.buildWorkhorsePrompt(
@@ -31,6 +32,6 @@ test("review workhorse prompt always includes FIXES_COMPLETE regardless of rewri
 	const off = promptSets.review.buildWorkhorsePrompt("Fix it\nVERDICT: CHANGES_REQUESTED", [], 1);
 	const on = promptSets.review.buildWorkhorsePrompt("Fix it\nVERDICT: CHANGES_REQUESTED", [], 1, { rewriteHistory: true });
 
-	assert.match(off, /FIXES_COMPLETE/, "present when off");
-	assert.match(on, /FIXES_COMPLETE/, "present when on");
+	assert.ok(off.includes(V_FIXES_COMPLETE), "present when off");
+	assert.ok(on.includes(V_FIXES_COMPLETE), "present when on");
 });

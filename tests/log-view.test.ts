@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import loopExtension from "../index.ts";
+import { V_FIXES_COMPLETE, V_APPROVED, V_CHANGES } from "../verdicts.ts";
 import { loadPiAgent } from "../tui-runtime.ts";
 
 function wait(ms = 150): Promise<void> {
@@ -133,7 +134,7 @@ const overseerText = [
 	"",
 	"- add a zero-divisor guard",
 	"",
-	"**VERDICT:** CHANGES_REQUESTED",
+	`${V_CHANGES}`,
 ].join("\n");
 
 const workhorseText = [
@@ -141,7 +142,7 @@ const workhorseText = [
 	"",
 	"Added the guard and a regression test.",
 	"",
-	"FIXES_COMPLETE",
+	`${V_FIXES_COMPLETE}`,
 ].join("\n");
 
 const TAB = "\t";
@@ -402,7 +403,7 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: filler + "\ntarget_line_alpha\n" + filler + "\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: filler + "\ntarget_line_alpha\n" + filler + `\n${V_CHANGES}`,
 			workhorseSummary: "[Workhorse Round 1] " + filler + "\ntarget_line_beta\n" + filler,
 		},
 	];
@@ -453,7 +454,7 @@ test("search highlights with ANSI reverse video, Esc clears", async () => {
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, overseerText: "found a mutex bug\n\n**VERDICT:** CHANGES_REQUESTED", workhorseSummary: "fixed it" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: `found a mutex bug\n\n${V_CHANGES}`, workhorseSummary: "fixed it" },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -526,7 +527,7 @@ test("current match uses distinct style from other matches", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "Test alpha and Test beta\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: `Test alpha and Test beta\n\n${V_CHANGES}`,
 			workhorseSummary: "done",
 		},
 	];
@@ -567,7 +568,7 @@ test("n/N visually moves highlight to the new match location", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "first_match here\n" + filler + "\nsecond_match here\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: "first_match here\n" + filler + `\nsecond_match here\n\n${V_CHANGES}`,
 			workhorseSummary: "done",
 		},
 	];
@@ -615,7 +616,7 @@ test("highlight uses reset to avoid color bleed from code blocks", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "```go\nfunc handleConn() error {\n```\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: "```go\nfunc handleConn() error {\n```\n\n" + V_CHANGES,
 			workhorseSummary: "done",
 		},
 	];
@@ -656,14 +657,14 @@ test("round timing shows duration in header and detail markdown", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "issue A\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: `issue A\n\n${V_CHANGES}`,
 			workhorseSummary: "fixed A",
 			startedAt: now - 15 * 60000,
 			endedAt: now - 3 * 60000,
 		},
 		{
 			round: 2, verdict: "approved" as const,
-			overseerText: "all good\n\n**VERDICT:** APPROVED",
+			overseerText: `all good\n\n${V_APPROVED}`,
 			workhorseSummary: "",
 			startedAt: now - 3 * 60000,
 			endedAt: now,
@@ -704,14 +705,14 @@ test("log header shows total elapsed time when rounds have timing", async () => 
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "issue\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: `issue\n\n${V_CHANGES}`,
 			workhorseSummary: "fix",
 			startedAt: now - 45 * 60000,
 			endedAt: now - 30 * 60000,
 		},
 		{
 			round: 2, verdict: "approved" as const,
-			overseerText: "ok\n\n**VERDICT:** APPROVED",
+			overseerText: `ok\n\n${V_APPROVED}`,
 			workhorseSummary: "",
 			startedAt: now - 30 * 60000,
 			endedAt: now,
@@ -746,7 +747,7 @@ test("timing is hidden when startedAt/endedAt are zero", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "approved" as const,
-			overseerText: "ok\n\n**VERDICT:** APPROVED",
+			overseerText: `ok\n\n${V_APPROVED}`,
 			workhorseSummary: "",
 			startedAt: 0,
 			endedAt: 0,
@@ -786,7 +787,7 @@ test("chat log messages include round timing and total timing", async () => {
 	entries.push({
 		id: "overseer-1",
 		type: "message",
-		message: { role: "assistant", content: "All good\n\n**VERDICT:** APPROVED", stopReason: "end_turn" },
+		message: { role: "assistant", content: `All good\n\n${V_APPROVED}`, stopReason: "end_turn" },
 	});
 	const agentEnd = (h as any).commands; // need events
 	// Actually we need the event handler from the harness
@@ -855,7 +856,7 @@ test("log viewer Request entry shows Started time in detail", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "approved" as const,
-			overseerText: "ok\n\n**VERDICT:** APPROVED",
+			overseerText: `ok\n\n${V_APPROVED}`,
 			workhorseSummary: "",
 			startedAt: now - 10 * 60000,
 			endedAt: now,
@@ -922,7 +923,7 @@ test("log viewer workhorse entry shows timing with stopwatch emoji", async () =>
 	const rounds = [
 		{
 			round: 1, verdict: "changes_requested" as const,
-			overseerText: "issue\n\n**VERDICT:** CHANGES_REQUESTED",
+			overseerText: `issue\n\n${V_CHANGES}`,
 			workhorseSummary: "[Workhorse Round 1] fixed it",
 			startedAt: now - 20 * 60000,
 			endedAt: now - 8 * 60000,
@@ -964,7 +965,7 @@ test("log viewer overseer entry uses stopwatch emoji for timing", async () => {
 	const rounds = [
 		{
 			round: 1, verdict: "approved" as const,
-			overseerText: "ok\n\n**VERDICT:** APPROVED",
+			overseerText: `ok\n\n${V_APPROVED}`,
 			workhorseSummary: "",
 			startedAt: now - 10 * 60000,
 			endedAt: now,
@@ -998,7 +999,7 @@ test("overlay renders enough lines to fill maxHeight for proper centering", asyn
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "approved" as const, overseerText: "ok\n\n**VERDICT:** APPROVED", workhorseSummary: "" },
+		{ round: 1, verdict: "approved" as const, overseerText: `ok\n\n${V_APPROVED}`, workhorseSummary: "" },
 	];
 	let capturedFactory: any;
 	let capturedOpts: any;

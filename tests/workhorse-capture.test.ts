@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import loopExtension from "../index.ts";
+import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
 function wait(ms = 200): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -98,11 +99,11 @@ test("workhorse output is captured using text from agent_end, not re-fetched", a
 	await h.start();
 
 	// Overseer says CHANGES_REQUESTED
-	h.pushAssistant("Issue found\n\nVERDICT: CHANGES_REQUESTED");
+	h.pushAssistant(`Issue found\n\n${V_CHANGES}`);
 	await h.fireAgentEnd();
 
 	// Fixer responds with FIXES_COMPLETE
-	h.pushAssistant("Fixed the issue and added tests.\n\nFIXES_COMPLETE");
+	h.pushAssistant(`Fixed the issue and added tests.\n\n${V_FIXES_COMPLETE}`);
 
 	// Fire agent_end synchronously — this captures text immediately.
 	// Then mock getBranch before the 100ms deferred callback fires.
@@ -126,7 +127,7 @@ test("workhorse with empty last assistant text still triggers re-prompt", async 
 	await h.start();
 
 	// Overseer says CHANGES_REQUESTED
-	h.pushAssistant("Issue found\n\nVERDICT: CHANGES_REQUESTED");
+	h.pushAssistant(`Issue found\n\n${V_CHANGES}`);
 	await h.fireAgentEnd();
 
 	// Fixer responds with only tool calls, no text content
@@ -135,6 +136,6 @@ test("workhorse with empty last assistant text still triggers re-prompt", async 
 	await h.fireAgentEnd();
 
 	// Should re-prompt instead of silently dropping
-	const rePrompts = h.userMessages.filter(m => m.includes("Continue") && m.includes("FIXES_COMPLETE"));
+	const rePrompts = h.userMessages.filter(m => m.includes("Continue") && m.includes(V_FIXES_COMPLETE));
 	assert.ok(rePrompts.length > 0, "re-prompts fixer when text is empty");
 });

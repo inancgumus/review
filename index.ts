@@ -17,7 +17,7 @@ import { newState } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
 import { parseArgs, snapshotContextHashes, changedContextPaths as findChangedContextPaths } from "./context.js";
 import { promptSets } from "./prompts.js";
-import { matchVerdict, hasFixesComplete, stripVerdict } from "./verdicts.js";
+import { matchVerdict, hasFixesComplete, stripVerdict, V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { sanitize, modelToStr, findModel, getLastAssistant } from "./session.js";
 import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
@@ -509,7 +509,7 @@ export default function (pi: ExtensionAPI) {
 			});
 			return;
 		}
-		deferIf("reviewing", () => pi.sendUserMessage("Continue. When done, end with VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED"));
+		deferIf("reviewing", () => pi.sendUserMessage(`Continue. When done, end with ${V_APPROVED} or ${V_CHANGES}`));
 	}
 
 	function handleWorkhorseEnd(text: string, ctx: any): void {
@@ -517,7 +517,7 @@ export default function (pi: ExtensionAPI) {
 			deferIf("fixing", () => void onWorkhorseDone(text, ctx));
 			return;
 		}
-		deferIf("fixing", () => pi.sendUserMessage("Continue addressing the remaining issues. When all fixes are done, end with FIXES_COMPLETE"));
+		deferIf("fixing", () => pi.sendUserMessage(`Continue addressing the remaining issues. When all fixes are done, end with ${V_FIXES_COMPLETE}`));
 	}
 
 	// ── Round tracking ──────────────────────────────────
@@ -570,6 +570,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Manual review. Usage: /loop:manual [sha]",
 		handler: async (args, ctx) => {
 			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
+
 			const cfg = loadConfig(ctx.cwd);
 			const trimmedArgs = (args || "").trim();
 
@@ -814,7 +815,7 @@ export default function (pi: ExtensionAPI) {
 						"intermediate steps return an error, the connection leaks. Under sustained",
 						"load this will exhaust file descriptors.",
 						"",
-						"**VERDICT:** CHANGES_REQUESTED",
+						`${V_CHANGES}`,
 					].join("\n"),
 					workhorse: [
 						"Added sync.RWMutex around connMap access — write lock only for",
@@ -887,7 +888,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"Tests look solid — the race detector test is a nice touch.",
 						"",
-						"**VERDICT:** CHANGES_REQUESTED",
+						`${V_CHANGES}`,
 					].join("\n"),
 					workhorse: [
 						"Narrowed lock scope:",
@@ -928,7 +929,7 @@ export default function (pi: ExtensionAPI) {
 						"",
 						"Clean code, good tests. Ship it.",
 						"",
-						"**VERDICT:** APPROVED",
+						`${V_APPROVED}`,
 					].join("\n"),
 					workhorse: "",
 				},
