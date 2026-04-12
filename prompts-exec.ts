@@ -23,6 +23,9 @@ function execIncrementalPrompt(round: number): string {
 		"If ALL steps in the plan are complete and verified, approve.",
 		"A verdict with zero tool calls is a rubber-stamp — that is unacceptable.",
 		"",
+		"Wrap the next step in `<task>` tags. Only the content inside the tags is sent to the workhorse.",
+		"Your verification notes and reasoning stay outside — the workhorse never sees them.",
+		"",
 		"End with exactly one of:",
 		`${V_APPROVED}`,
 		`${V_CHANGES}`,
@@ -46,9 +49,23 @@ function execFullPrompt(p: OverseerPromptParams): string {
 		"- You are the ORCHESTRATOR. Do NOT modify, edit, or write any files.",
 		"- Only use read and bash. Run git/grep/find/ls/tests via bash.",
 		"- Drip-feed ONE step at a time. Never dump multiple steps.",
-		"- Your output goes directly to the workhorse. ONLY describe the current step.",
 		"- Do NOT mention future steps, the overall plan, or what comes next. The workhorse must not know the full plan.",
 		"- Be specific and actionable. The workhorse should not have to guess.",
+		"",
+		"## CRITICAL: Use <task> tags",
+		"Wrap the current step description in `<task>` tags. ONLY the content inside these tags is sent to the workhorse. Everything outside is stripped.",
+		"",
+		"Example:",
+		"```",
+		"I verified step 1 is complete. Tests pass. Moving to step 2.",
+		"",
+		"<task>",
+		"Create `calc.go` with an Add function that takes two int args and returns their sum.",
+		"Add a test in `calc_test.go` with table-driven cases for positive, negative, and zero inputs.",
+		"</task>",
+		"```",
+		"",
+		"Your notes, verification results, and reasoning stay outside the tags — the workhorse never sees them.",
 		"",
 		"VERIFICATION CHECKLIST (do this every round):",
 		"- Read the files the workhorse changed. Do they match what was asked?",
@@ -84,8 +101,14 @@ function execFullPrompt(p: OverseerPromptParams): string {
 	return parts.join("\n");
 }
 
+function extractTask(text: string): string {
+	const match = text.match(/<task>([\s\S]*?)<\/task>/i);
+	if (match) return match[1].trim();
+	return text;
+}
+
 function execWorkhorsePrompt(overseerText: string, _contextPaths: string[], round: number): string {
-	const cleaned = sanitize(overseerText.replace(CHANGES_STRIP_RE, "").trim());
+	const cleaned = sanitize(extractTask(overseerText).replace(CHANGES_STRIP_RE, "").trim());
 	return [
 		`## Workhorse Task — Round ${round}`,
 		"",

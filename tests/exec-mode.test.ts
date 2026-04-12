@@ -140,7 +140,7 @@ test("/loop:exec orchestrator prompt forbids leaking plan to workhorse", async (
 	await h.commands.get("loop:exec")!("build it", h.ctx);
 
 	assert.match(h.userMessages[0], /do not mention future steps/i, "forbids mentioning future steps");
-	assert.match(h.userMessages[0], /only describe the current step/i, "restricts output to current step");
+	assert.match(h.userMessages[0], /<task>/, "instructs to use <task> tags for isolation");
 });
 
 test("/loop:exec orchestrator prompt requires verification", async () => {
@@ -173,6 +173,65 @@ test("/loop:exec workhorse prompt forbids subagents and multi-step", async () =>
 	assert.match(h.userMessages[1], /only.*single step/i, "restricts to single step");
 	assert.match(h.userMessages[1], /not.*subagent/i, "forbids subagents");
 	assert.match(h.userMessages[1], /not.*implement ahead/i, "forbids working ahead");
+});
+
+test("/loop:exec workhorse only sees <task> block, not full overseer text", async () => {
+	const h = createHarness();
+	await h.commands.get("loop:exec")!("build it", h.ctx);
+
+	// Overseer wraps the task in <task> tags but leaks future steps outside
+	h.ctx.sessionManager.getEntries().push({
+		id: "assistant-task",
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [
+				"I verified the repo is empty. The plan has 6 steps.",
+				"",
+				"<task>",
+				"Create `main.go` with a basic main function that reads from stdin.",
+				"</task>",
+				"",
+				"After this we'll add arithmetic operations in steps 2-4.",
+				"",
+				V_CHANGES,
+			].join("\n"),
+			stopReason: "end_turn",
+		},
+	});
+
+	h.events.get("agent_end")!({}, h.ctx);
+	await wait();
+
+	const workhorsePrompt = h.userMessages[1];
+	// Should see the task content
+	assert.match(workhorsePrompt, /Create `main\.go`/, "workhorse sees the task");
+	// Should NOT see text outside <task> tags
+	assert.doesNotMatch(workhorsePrompt, /6 steps/, "workhorse does NOT see step count");
+	assert.doesNotMatch(workhorsePrompt, /arithmetic operations/, "workhorse does NOT see future steps");
+	// Tags themselves should be stripped
+	assert.doesNotMatch(workhorsePrompt, /<task>/, "no opening tag in workhorse prompt");
+	assert.doesNotMatch(workhorsePrompt, /<\/task>/, "no closing tag in workhorse prompt");
+});
+
+test("/loop:exec workhorse falls back to full text when no <task> tags", async () => {
+	const h = createHarness();
+	await h.commands.get("loop:exec")!("build it", h.ctx);
+
+	h.ctx.sessionManager.getEntries().push({
+		id: "assistant-notag",
+		type: "message",
+		message: {
+			role: "assistant",
+			content: `Create main.go with a basic main function.\n\n${V_CHANGES}`,
+			stopReason: "end_turn",
+		},
+	});
+
+	h.events.get("agent_end")!({}, h.ctx);
+	await wait();
+
+	assert.match(h.userMessages[1], /Create main\.go/, "workhorse sees the full text as fallback");
 });
 
 test("/loop still uses review prompts", async () => {
