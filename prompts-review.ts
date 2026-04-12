@@ -94,9 +94,10 @@ function reviewFullPrompt(p: OverseerPromptParams): string {
 	return parts.join("\n");
 }
 
-function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number): string {
+function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string {
 	const cleaned = sanitize(overseerText.replace(/VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi, "").trim());
-	return [
+	const rewrite = opts?.rewriteHistory === true;
+	const parts = [
 		`## Overseer Feedback — Round ${round}`,
 		"",
 		cleaned,
@@ -106,31 +107,39 @@ function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 		"Address every blocking issue listed above:",
 		"- **Fix it**, or **explain why you disagree** (the overseer will accept reasonable justifications).",
 		"- Nitpicks are optional — fix them if you agree, skip if you don't.",
-		"",
-		"### Git rules (mandatory)",
-		"- If changes are **uncommitted** (unstaged/staged): leave them uncommitted. Do not commit.",
-		"- If changes span **a single commit**: `git add -A && git commit --amend --no-edit`",
-		"- If changes span **multiple commits** (the overseer tagged issues with commit SHAs):",
-		"  1. Fix each issue, then stage ONLY its files: `git add <files>`",
-		"  2. Create a fixup commit targeting the right SHA: `git commit --fixup=<sha>`",
-		"  3. **YOU MUST** run the autosquash rebase after ALL fixup commits are created:",
-		"     ```bash",
-		"     GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <parent-of-oldest-fixed-commit>",
-		"     ```",
-		"     This is NOT optional. If you skip it, the fixups remain as separate commits.",
-		"  If the rebase has conflicts, resolve them and `git rebase --continue`.",
-		"- If the overseer asked to **split a commit**:",
-		"  1. `GIT_SEQUENCE_EDITOR=\"sed -i '' 's/^pick \\(<sha>\\)/edit \\1/'\" git rebase -i <parent>`",
-		"  2. `git reset HEAD~` to unstage everything",
-		"  3. Selectively `git add` and `git commit` each logical piece",
-		"  4. `git rebase --continue`",
-		"  Do NOT ask for confirmation. Execute the split immediately.",
-		"- **Never create new standalone commits** unless splitting. Only --amend or --fixup.",
-		"",
-		"### CRITICAL: Never open an interactive editor",
-		"- ALWAYS prefix `git rebase -i` with `GIT_SEQUENCE_EDITOR=true` (to auto-accept) or `GIT_SEQUENCE_EDITOR=\"sed ...\"` (to script edits).",
-		"- NEVER run bare `git rebase -i` — it opens vim/vi and you WILL get stuck.",
-		"- Same applies to `git commit` without `-m` or `--no-edit` — always pass a message flag.",
+	];
+
+	if (rewrite) {
+		parts.push(
+			"",
+			"### Git rules (mandatory)",
+			"- If changes are **uncommitted** (unstaged/staged): leave them uncommitted. Do not commit.",
+			"- If changes span **a single commit**: `git add -A && git commit --amend --no-edit`",
+			"- If changes span **multiple commits** (the overseer tagged issues with commit SHAs):",
+			"  1. Fix each issue, then stage ONLY its files: `git add <files>`",
+			"  2. Create a fixup commit targeting the right SHA: `git commit --fixup=<sha>`",
+			"  3. **YOU MUST** run the autosquash rebase after ALL fixup commits are created:",
+			"     ```bash",
+			"     GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash <parent-of-oldest-fixed-commit>",
+			"     ```",
+			"     This is NOT optional. If you skip it, the fixups remain as separate commits.",
+			"  If the rebase has conflicts, resolve them and `git rebase --continue`.",
+			"- If the overseer asked to **split a commit**:",
+			"  1. `GIT_SEQUENCE_EDITOR=\"sed -i '' 's/^pick \\(<sha>\\)/edit \\1/'\" git rebase -i <parent>`",
+			"  2. `git reset HEAD~` to unstage everything",
+			"  3. Selectively `git add` and `git commit` each logical piece",
+			"  4. `git rebase --continue`",
+			"  Do NOT ask for confirmation. Execute the split immediately.",
+			"- **Never create new standalone commits** unless splitting. Only --amend or --fixup.",
+			"",
+			"### CRITICAL: Never open an interactive editor",
+			"- ALWAYS prefix `git rebase -i` with `GIT_SEQUENCE_EDITOR=true` (to auto-accept) or `GIT_SEQUENCE_EDITOR=\"sed ...\"` (to script edits).",
+			"- NEVER run bare `git rebase -i` — it opens vim/vi and you WILL get stuck.",
+			"- Same applies to `git commit` without `-m` or `--no-edit` — always pass a message flag.",
+		);
+	}
+
+	parts.push(
 		"",
 		"IMPORTANT: Do NOT output any VERDICT lines. You are the workhorse, not the overseer.",
 		"",
@@ -138,5 +147,7 @@ function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 		"end your response with exactly:",
 		"FIXES_COMPLETE",
 		expandContextPaths(contextPaths),
-	].join("\n");
+	);
+
+	return parts.join("\n");
 }

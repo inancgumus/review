@@ -12,6 +12,7 @@ export interface Config {
 	maxRounds: number;
 	reviewMode: ReviewMode;
 	plannotator: boolean;
+	rewriteHistory: boolean;
 }
 
 export type Phase = "idle" | "reviewing" | "fixing" | "awaiting_feedback";
@@ -31,7 +32,7 @@ export interface OverseerPromptParams {
 
 export interface PromptSet {
 	buildOverseerPrompt(p: OverseerPromptParams): string;
-	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number): string;
+	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string;
 }
 
 export type Verdict = "approved" | "changes_requested" | null;

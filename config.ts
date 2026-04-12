@@ -13,6 +13,7 @@ const DEFAULTS: Config = {
 	maxRounds: 10,
 	reviewMode: "fresh",
 	plannotator: true,
+	rewriteHistory: false,
 };
 
 const SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
@@ -38,6 +39,7 @@ export function loadConfig(_cwd: string): Config {
 		maxRounds: saved.maxRounds ?? DEFAULTS.maxRounds,
 		reviewMode: saved.reviewMode === "incremental" ? "incremental" : DEFAULTS.reviewMode,
 		plannotator: saved.plannotator !== false,
+		rewriteHistory: saved.rewriteHistory === true,
 	};
 }
 

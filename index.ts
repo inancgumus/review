@@ -387,7 +387,8 @@ export default function (pi: ExtensionAPI) {
 				workhorseInput = `[COMMIT:${sha}]\n${workhorseInput}`;
 			}
 		}
-		pi.sendUserMessage(prompts.buildWorkhorsePrompt(workhorseInput, state.contextPaths, state.round));
+		const cfg2 = loadConfig(ctx.cwd);
+		pi.sendUserMessage(prompts.buildWorkhorsePrompt(workhorseInput, state.contextPaths, state.round, { rewriteHistory: cfg2.rewriteHistory }));
 	}
 
 	async function onWorkhorseDone(workhorseText: string, eventCtx: any): Promise<void> {
@@ -974,6 +975,7 @@ export default function (pi: ExtensionAPI) {
 					`Max rounds: ${cfg.maxRounds}`,
 					`Loop mode: ${cfg.reviewMode}`,
 					`Plannotator: ${cfg.plannotator ? "enabled" : "disabled"}`,
+					`Rewrite history: ${cfg.rewriteHistory ? "enabled" : "disabled"}`,
 				]);
 				if (!action) break;
 				if (action.startsWith("Overseer model")) await pickModel("overseerModel", cfg, ctx);
@@ -988,6 +990,11 @@ export default function (pi: ExtensionAPI) {
 					// Reset detection cache so next manual loop re-probes
 					state.hasPlannotator = null;
 					ctx.ui.notify(`Plannotator → ${newVal ? "enabled" : "disabled"}`, "success");
+				}
+				else if (action.startsWith("Rewrite history")) {
+					const newVal = !cfg.rewriteHistory;
+					saveConfigField("rewriteHistory", newVal as any);
+					ctx.ui.notify(`Rewrite history → ${newVal ? "enabled" : "disabled"}`, "success");
 				}
 			}
 		},
