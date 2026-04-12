@@ -467,7 +467,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", (_event, ctx) => {
 		if (state.phase === "idle") return;
 		const { text, stopReason } = getLastAssistant(ctx);
-		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") return;
+		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") {
+			void stopLoop(ctx);
+			return;
+		}
 
 		if (state.phase === "reviewing") {
 			if (!text.trim()) return;
