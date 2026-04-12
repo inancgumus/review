@@ -108,7 +108,12 @@ function createHarness(cwdOverride?: string) {
 		return { approved: true, feedback: "" };
 	});
 
-	return { commands, events, ctx, userMessages, selectQueue, inputQueue, reviewResults };
+	async function stopLoop(): Promise<void> {
+		const stop = commands.get("loop:stop");
+		if (stop) await stop("", ctx);
+	}
+
+	return { commands, events, ctx, userMessages, selectQueue, inputQueue, reviewResults, stopLoop };
 }
 
 test("/loop:manual command registers", () => {
@@ -327,6 +332,55 @@ test("/loop:manual single commit picker (no args)", async () => {
 
 		await h.commands.get("loop:manual")!("", h.ctx);
 		// reviewFn default = approve → loop ends
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:manual multi-file feedback includes all file references", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha = addCommit(repo.cwd, "a.txt", "hello\nworld", "fix stuff");
+		writeFileSync(join(repo.cwd, "b.txt"), "other");
+		execSync("git add b.txt && git commit --amend --no-edit", { cwd: repo.cwd });
+		const amendedSha = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
+		const short = amendedSha.slice(0, 7);
+
+		const h = createHarness(repo.cwd);
+		h.reviewResults.push({
+			approved: false,
+			feedback: `${short}:a.txt:1 — fix greeting\n${short}:b.txt:1 — fix other file`,
+		});
+		await h.commands.get("loop:manual")!(amendedSha, h.ctx);
+
+		assert.equal(h.userMessages.length, 1, "one workhorse prompt sent");
+		assert.match(h.userMessages[0], /a\.txt/, "includes first file reference");
+		assert.match(h.userMessages[0], /b\.txt/, "includes second file reference");
+		assert.match(h.userMessages[0], /fix greeting/, "includes first comment");
+		assert.match(h.userMessages[0], /fix other file/, "includes second comment");
+		await h.stopLoop();
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:manual range feedback includes range in workhorse prompt", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha = addCommit(repo.cwd, "a.txt", "line1\nline2\nline3\nline4\nline5", "fix stuff");
+		const short = sha.slice(0, 7);
+
+		const h = createHarness(repo.cwd);
+		h.reviewResults.push({
+			approved: false,
+			feedback: `${short}:a.txt:2-4 — fix this block`,
+		});
+		await h.commands.get("loop:manual")!(sha, h.ctx);
+
+		assert.equal(h.userMessages.length, 1, "one workhorse prompt sent");
+		assert.match(h.userMessages[0], /a\.txt/, "includes file reference");
+		assert.match(h.userMessages[0], /fix this block/, "includes range comment");
+		await h.stopLoop();
 	} finally {
 		repo.cleanup();
 	}
