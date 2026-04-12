@@ -296,21 +296,7 @@ export default function (pi: ExtensionAPI) {
 			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
 			updateStatus(ctx);
 
-			// Plannotator path: opens browser, handles approve + feedback
-			if (detectPlannotator()) {
-				const result = await showCommitViaPlannotator(ctx, sha);
-				if (result?.action === "approve") {
-					if (!await advanceCommit(ctx)) return;
-					continue;
-				}
-				if (result?.feedback) {
-					await startManualInnerLoop(result.feedback, ctx);
-					return;
-				}
-				// Plannotator dismissed — fall through to TUI
-			}
-
-			// TUI path: minimal menu (Esc = stop)
+			// TUI menu first — plannotator only opens on Feedback
 			const action = await ctx.ui.select(
 				`${shortSha} ${subject} (${state.currentCommitIdx + 1}/${state.commitList.length})`,
 				["Approve", "Feedback"],
@@ -324,9 +310,20 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (action === "Feedback") {
-				const feedback = typeof ctx.ui.editor === "function"
-					? await ctx.ui.editor("Feedback")
-					: await ctx.ui.input("Feedback");
+				let feedback: string | undefined;
+				if (detectPlannotator()) {
+					const result = await showCommitViaPlannotator(ctx, sha);
+					if (result?.action === "approve") {
+						if (!await advanceCommit(ctx)) return;
+						continue;
+					}
+					feedback = result?.feedback;
+				}
+				if (!feedback) {
+					feedback = typeof ctx.ui.editor === "function"
+						? await ctx.ui.editor("Feedback")
+						: await ctx.ui.input("Feedback");
+				}
 				if (!feedback) continue;
 				await startManualInnerLoop(feedback, ctx);
 				return;
