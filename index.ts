@@ -503,8 +503,6 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			log(`✅ APPROVED`);
-			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 			deferIf("reviewing", () => { ctx.ui.notify(`✅ Approved after ${state.round} round(s)`, "success"); stopLoop(ctx); });
 			return;
 		}

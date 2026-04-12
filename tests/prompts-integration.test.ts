@@ -597,3 +597,176 @@ test("review workhorse prompt includes fixup/amend/rebase when rewriteHistory is
 		saveConfigField("rewriteHistory", saved);
 	}
 });
+
+// ── Group 6: Fixup audit (unchanged commits detection) ──
+
+test("unchanged commits detected: logMessages shows warning when workhorse doesn't fix", async () => {
+	const repo = createTempRepo();
+	const saved = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "incremental");
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add request handler");
+		const sha3 = addCommit(repo.cwd, "c.txt", "ccc", "Add middleware");
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check auth", h.ctx);
+
+		h.pushAssistant([
+			`Review these commits:`,
+			`- \`${sha1.slice(0, 7)}\` Add auth module`,
+			`- \`${sha2.slice(0, 7)}\` Add request handler`,
+			`- \`${sha3.slice(0, 7)}\` Add middleware`,
+			``,
+			V_CHANGES,
+		].join("\n"));
+		await h.fireAgentEnd();
+
+		// Workhorse does nothing — doesn't fix any commits
+		h.pushAssistant(`Fixed everything.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const hasWarning = h.logMessages.some(m => m.includes("⚠️ Unchanged commits"));
+		assert.ok(hasWarning, "logMessages should contain unchanged commits warning");
+
+		const round2 = h.userMessages[2];
+		assert.ok(round2, "round 2 overseer prompt exists");
+		assert.match(round2, /unchanged|not modified/i, "round 2 warns about unchanged commits");
+		await h.stopLoop();
+	} finally {
+		saveConfigField("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+test("no unchanged warning when workhorse actually fixes commits", async () => {
+	const repo = createTempRepo();
+	const saved = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "incremental");
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
+		const root = execSync("git rev-list --max-parents=0 HEAD", {
+			cwd: repo.cwd, encoding: "utf-8",
+		}).trim();
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check auth", h.ctx);
+
+		h.pushAssistant([
+			`Review commit \`${sha1.slice(0, 7)}\` and \`${sha2.slice(0, 7)}\``,
+			``, V_CHANGES,
+		].join("\n"));
+		await h.fireAgentEnd();
+
+		// Actually fix both commits via fixup + autosquash rebase
+		writeFileSync(join(repo.cwd, "a.txt"), "aaa fixed");
+		execSync(`git add a.txt && git commit --fixup=${sha1}`, { cwd: repo.cwd });
+		writeFileSync(join(repo.cwd, "b.txt"), "bbb fixed");
+		execSync(`git add b.txt && git commit --fixup=${sha2}`, { cwd: repo.cwd });
+		execSync(`GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash ${root}`, { cwd: repo.cwd });
+
+		h.pushAssistant(`Fixed both commits.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const hasWarning = h.logMessages.some(m => m.includes("⚠️ Unchanged commits"));
+		assert.ok(!hasWarning, "logMessages should NOT contain unchanged commits warning");
+
+		const round2 = h.userMessages[2];
+		assert.ok(round2, "round 2 prompt exists");
+		assert.doesNotMatch(round2, /unchanged/i, "round 2 does not warn about unchanged");
+		await h.stopLoop();
+	} finally {
+		saveConfigField("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+test("backtick SHAs near commit keyword triggers unchanged detection", async () => {
+	const repo = createTempRepo();
+	const saved = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "incremental");
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check auth", h.ctx);
+
+		// Use "commit" keyword near backtick SHAs
+		h.pushAssistant(`Review commit \`${sha1.slice(0, 7)}\` and commit \`${sha2.slice(0, 7)}\`\n\n${V_CHANGES}`);
+		await h.fireAgentEnd();
+
+		// Snapshot should have been taken
+		const hasSnapshot = h.logMessages.some(m => m.includes("[Snapshot]"));
+		assert.ok(hasSnapshot, "snapshot was taken for 2 tagged SHAs");
+
+		// Don't fix commits
+		h.pushAssistant(`Done.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const hasWarning = h.logMessages.some(m => m.includes("⚠️ Unchanged commits"));
+		assert.ok(hasWarning, "unchanged warning appears");
+		await h.stopLoop();
+	} finally {
+		saveConfigField("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+test("short hex under 7 chars ignored by SHA extraction — no snapshot", async () => {
+	const repo = createTempRepo();
+	const saved = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "incremental");
+	try {
+		addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
+		addCommit(repo.cwd, "b.txt", "bbb", "Add handler");
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check auth", h.ctx);
+
+		// Overseer uses 4-char hex strings — too short for extraction
+		h.pushAssistant(`Check \`a1b2\` and \`c3d4\`\n\n${V_CHANGES}`);
+		await h.fireAgentEnd();
+
+		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const hasSnapshot = h.logMessages.some(m => m.includes("[Snapshot]"));
+		assert.ok(!hasSnapshot, "should not snapshot with short hex strings");
+
+		const round2 = h.userMessages[2];
+		assert.ok(round2, "round 2 exists");
+		assert.doesNotMatch(round2, /unchanged/i, "no unchanged warning");
+		await h.stopLoop();
+	} finally {
+		saveConfigField("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+test("single tagged SHA skips unchanged detection — no snapshot", async () => {
+	const repo = createTempRepo();
+	const saved = loadConfig(process.cwd()).reviewMode;
+	saveConfigField("reviewMode", "incremental");
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth");
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check auth", h.ctx);
+
+		// Only 1 SHA — extension requires > 1 to activate snapshot
+		h.pushAssistant(`Check \`${sha1.slice(0, 7)}\`\n\n${V_CHANGES}`);
+		await h.fireAgentEnd();
+
+		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const hasSnapshot = h.logMessages.some(m => m.includes("[Snapshot]"));
+		assert.ok(!hasSnapshot, "should not snapshot with single SHA");
+		await h.stopLoop();
+	} finally {
+		saveConfigField("reviewMode", saved);
+		repo.cleanup();
+	}
+});
