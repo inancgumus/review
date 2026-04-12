@@ -765,44 +765,90 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function pickCommits(ctx: any): Promise<{ commits: string[]; base: string } | null> {
-		// Show recent commits for selection
-		let allShas: string[];
+		let range: string;
+		try { range = resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
+
+		// Newest first for the picker
+		let branchShas: string[];
 		try {
-			allShas = execSync("git log --reverse --format=%H -50", { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
+			branchShas = execSync(`git log --format=%H ${range}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
 		} catch {
 			ctx.ui.notify("Could not list commits", "error");
 			return null;
 		}
-		if (allShas.length === 0) { ctx.ui.notify("No commits found", "error"); return null; }
+		if (branchShas.length === 0) { ctx.ui.notify("No commits on this branch", "error"); return null; }
 
-		const items = allShas.map(s => {
-			const subj = getCommitSubject(ctx.cwd, s);
-			return `${s.slice(0, 7)} ${subj}`;
-		});
+		const labels = branchShas.map(s => `${s.slice(0, 7)} ${getCommitSubject(ctx.cwd, s)}`);
 
-		// Pick start of range
-		const startPick = await ctx.ui.select("Range start (oldest)", items);
-		if (!startPick) return null;
-		const startIdx = items.indexOf(startPick);
-		if (startIdx < 0) return null;
+		// Custom picker: Enter = single commit, Space = mark range endpoint
+		type PickResult = { type: "single"; idx: number } | { type: "range"; from: number; to: number } | null;
 
-		// Pick end of range (or same = single commit)
-		const endItems = items.slice(startIdx);
-		const endPick = await ctx.ui.select("Range end (newest) -- same for single commit", endItems);
-		if (!endPick) return null;
-		const endIdx = startIdx + endItems.indexOf(endPick);
-		if (endIdx < startIdx) return null;
+		const picked: PickResult = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (r: PickResult) => void) => {
+			let cursor = 0;
+			let rangeStart: number | null = null;
 
-		const commits = allShas.slice(startIdx, endIdx + 1);
-		// Base = parent of first selected commit
-		let base: string;
-		try {
-			base = execSync(`git rev-parse ${commits[0]}~1`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
-		} catch {
-			// First commit in repo has no parent
-			base = commits[0];
+			return {
+				render(width: number): string[] {
+					const rows: string[] = [];
+					const title = rangeStart !== null ? "Select range end (Space/Enter to confirm)" : "Pick commit (Enter) or start range (Space)";
+					rows.push(theme.fg("accent", title));
+					rows.push("");
+					for (let i = 0; i < labels.length; i++) {
+						const isCursor = i === cursor;
+						const inRange = rangeStart !== null && i >= Math.min(rangeStart, cursor) && i <= Math.max(rangeStart, cursor);
+						const marker = rangeStart === i ? "+" : inRange ? "|" : " ";
+						const prefix = isCursor ? theme.fg("accent", ">") : " ";
+						const line = `${prefix} ${marker} ${labels[i]}`;
+						rows.push(inRange || isCursor ? theme.fg(isCursor ? "accent" : "text", line) : theme.fg("dim", line));
+					}
+					rows.push("");
+					rows.push(theme.fg("dim", " Esc cancel  j/k navigate  Enter select  Space mark range"));
+					return rows;
+				},
+				handleInput(data: string): void {
+					if (data === "\x1b" || data === "\x1b[" || data === "q") { done(null); return; }
+					if (data === "j" || data === "\x1b[B") { cursor = Math.min(cursor + 1, labels.length - 1); tui.requestRender(); return; }
+					if (data === "k" || data === "\x1b[A") { cursor = Math.max(cursor - 1, 0); tui.requestRender(); return; }
+					if (data === " ") {
+						if (rangeStart === null) { rangeStart = cursor; tui.requestRender(); return; }
+						// Second space = confirm range
+						const from = Math.min(rangeStart, cursor);
+						const to = Math.max(rangeStart, cursor);
+						done({ type: "range", from, to });
+						return;
+					}
+					if (data === "\r" || data === "\n") {
+						if (rangeStart !== null) {
+							const from = Math.min(rangeStart, cursor);
+							const to = Math.max(rangeStart, cursor);
+							done({ type: "range", from, to });
+						} else {
+							done({ type: "single", idx: cursor });
+						}
+						return;
+					}
+				},
+			};
+		}, { overlay: true, overlayOptions: { anchor: "center" as any, width: 80, minWidth: 40, maxHeight: "80%", margin: 1 } });
+
+		if (!picked) return null;
+
+		let selectedShas: string[];
+		if (picked.type === "single") {
+			selectedShas = [branchShas[picked.idx]];
+		} else {
+			// newest-first in branchShas, reverse to chronological
+			selectedShas = branchShas.slice(picked.from, picked.to + 1).reverse();
 		}
-		return { commits, base };
+
+		let base: string;
+		const oldest = selectedShas[0];
+		try {
+			base = execSync(`git rev-parse ${oldest}~1`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
+		} catch {
+			base = oldest;
+		}
+		return { commits: selectedShas, base };
 	}
 
 	pi.registerCommand("loop:resume", {
