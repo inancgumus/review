@@ -117,7 +117,7 @@ test("/loop:manual builds commit list and shows first commit", async () => {
 		const h = createHarness(repo.cwd);
 
 		// User will stop immediately
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push(undefined);
 
 		await h.commands.get("loop:manual")!(`${sha1}~1..HEAD`, h.ctx);
 
@@ -136,8 +136,8 @@ test("/loop:manual approve advances to next commit", async () => {
 		const h = createHarness(repo.cwd);
 
 		// Approve first, then stop on second
-		h.selectQueue.push("✅ Approve");
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push("Approve");
+		h.selectQueue.push(undefined);
 
 		await h.commands.get("loop:manual")!("HEAD~2..HEAD", h.ctx);
 
@@ -157,7 +157,7 @@ test("/loop:manual approve last commit ends loop", async () => {
 		h.ctx.ui.notify = (msg: string) => { notifyMsg = msg; };
 
 		// Approve the only commit
-		h.selectQueue.push("✅ Approve");
+		h.selectQueue.push("Approve");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
 		assert.match(notifyMsg, /approved/i, "should notify all approved");
@@ -166,25 +166,18 @@ test("/loop:manual approve last commit ends loop", async () => {
 	}
 });
 
-test("/loop:manual jump changes commit index", async () => {
+test("/loop:manual esc stops the loop", async () => {
 	const repo = createTempRepo();
 	try {
 		addCommit(repo.cwd, "a.txt", "hello", "first commit");
-		addCommit(repo.cwd, "b.txt", "world", "second commit");
-		addCommit(repo.cwd, "c.txt", "test", "third commit");
 
 		const h = createHarness(repo.cwd);
 
-		// Jump to commit 3, then stop
-		h.selectQueue.push("⏭ Jump to...");
-		h.selectQueue.push("3. "); // select third (partial match OK, queue returns this exact string)
-		h.selectQueue.push("⏹ Stop");
+		// Esc (undefined) = stop
+		h.selectQueue.push(undefined);
 
-		// We need the select to return the actual item string for the jump list
-		// The jump list items are formatted as "3. <sha> <subject>"
-		// Our mock returns the queued string directly, but the code does parseInt(picked)
-		// So "3. " will parseInt to 3, which is correct
-		await h.commands.get("loop:manual")!("HEAD~3..HEAD", h.ctx);
+		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
+		assert.equal(h.userMessages.length, 0, "no model prompts");
 	} finally {
 		repo.cleanup();
 	}
@@ -198,7 +191,7 @@ test("/loop:manual feedback starts workhorse with commit SHA", async () => {
 		const h = createHarness(repo.cwd);
 
 		// Give feedback
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix the error handling");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -222,7 +215,7 @@ test("/loop:manual overseer approval in inner loop returns to user (not stop)", 
 		const h = createHarness(repo.cwd);
 
 		// Give feedback → starts inner loop
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix error handling");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -260,7 +253,7 @@ test("/loop:manual overseer approval in inner loop returns to user (not stop)", 
 		});
 
 		// Queue the next user action: approve and end
-		h.selectQueue.push("✅ Approve");
+		h.selectQueue.push("Approve");
 
 		agentEnd({}, h.ctx);
 		await wait(300);
@@ -279,7 +272,7 @@ test("/loop:manual overseer changes_requested continues inner loop", async () =>
 
 		const h = createHarness(repo.cwd);
 
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix error handling");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -329,7 +322,7 @@ test("/loop:manual auto-detects range from branch", async () => {
 		addCommit(repo.cwd, "a.txt", "hello", "feature commit");
 
 		const h = createHarness(repo.cwd);
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push(undefined);
 
 		await h.commands.get("loop:manual")!("", h.ctx);
 		// Should detect merge-base with main and show the feature commit
@@ -349,7 +342,7 @@ test("/loop:manual pauses timer during awaiting_feedback", async () => {
 		h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "loop") statuses.push(text || ""); };
 
 		// Stop immediately — we just want to check the status while awaiting feedback
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push(undefined);
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
 
@@ -374,7 +367,7 @@ test("/loop:manual resumes timer when inner loop starts", async () => {
 		h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "loop") lastStatus = text || ""; };
 
 		// Give feedback to trigger inner loop
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix the bug");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -394,7 +387,7 @@ test("/loop:manual uses incremental reviewMode", async () => {
 		addCommit(repo.cwd, "a.txt", "hello", "test");
 
 		const h = createHarness(repo.cwd);
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix it");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -431,13 +424,13 @@ test("/loop:resume recovers manual mode session", async () => {
 		const h = createHarness(repo.cwd);
 
 		// Start manual loop, approve first commit, then stop on second
-		h.selectQueue.push("✅ Approve");
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push("Approve");
+		h.selectQueue.push(undefined);
 		await h.commands.get("loop:manual")!(`${sha1}~1..HEAD`, h.ctx);
 
 		// Now resume — the anchor should have manual mode data
 		// Queue stop so the resumed showCommitForReview returns
-		h.selectQueue.push("⏹ Stop");
+		h.selectQueue.push(undefined);
 
 		let notifyMsg = "";
 		h.ctx.ui.notify = (msg: string) => { notifyMsg = msg; };
@@ -465,7 +458,7 @@ test("/loop:manual resets context between feedback cycles", async () => {
 		h.ctx.navigateTree = async (id: string) => { navTargets.push(id); return { cancelled: false }; };
 
 		// Cycle 1: give feedback
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("fix error handling");
 
 		await h.commands.get("loop:manual")!("HEAD~1..HEAD", h.ctx);
@@ -490,7 +483,7 @@ test("/loop:manual resets context between feedback cycles", async () => {
 		});
 
 		// Cycle 2: give new feedback after overseer approves
-		h.selectQueue.push("💬 Feedback");
+		h.selectQueue.push("Feedback");
 		h.inputQueue.push("also fix the logging");
 
 		const navCountBeforeCycle2 = navTargets.length;

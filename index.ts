@@ -238,11 +238,10 @@ export default function (pi: ExtensionAPI) {
 				const currentHead = execSync("git rev-parse HEAD", { ...GIT_OPTS, cwd }).trim();
 				const expectedHead = execSync(`git rev-parse ${originalBranch || originalRef}`, { ...GIT_OPTS, cwd }).trim();
 				if (currentHead !== expectedHead) {
-					log(`⚠️ HEAD restore mismatch — forcing checkout`);
 					execSync(`git checkout ${originalBranch || originalRef} --force --quiet`, { ...GIT_OPTS, cwd });
 				}
-			} catch (e: any) {
-				log(`⚠️ Could not restore HEAD — run: git checkout ${originalBranch || originalRef}`);
+			} catch {
+				// Best effort -- stopLoop will detect and clean up
 			}
 		}
 	}
@@ -264,117 +263,72 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Commit review UI ───────────────────────
 
+	function recoverGitState(ctx: any): boolean {
+		const gitIssue = checkGitState(ctx.cwd);
+		if (!gitIssue) return true;
+		const fixed = fixGitState(ctx.cwd, gitIssue);
+		if (fixed) return true;
+		if (gitIssue.type === "dirty_tree") return true; // warn-only, proceed
+		ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually, then /loop:resume`, "error");
+		return false;
+	}
+
+	async function advanceCommit(ctx: any): Promise<boolean> {
+		if (state.currentCommitIdx >= state.commitList.length - 1) {
+			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+			await stopLoop(ctx);
+			return false;
+		}
+		state.currentCommitIdx++;
+		return true;
+	}
+
 	async function showCommitForReview(ctx: any): Promise<void> {
 		pauseTimer();
+		if (!recoverGitState(ctx)) { await stopLoop(ctx); return; }
 
-		// Recover from broken git state before showing anything
-		const gitIssue = checkGitState(ctx.cwd);
-		if (gitIssue) {
-			log(`⚠️ Git: ${gitIssue.message}`);
-			const fixed = fixGitState(ctx.cwd, gitIssue);
-			if (fixed) {
-				log(`✅ Auto-fixed: ${gitIssue.message}`);
-			} else if (gitIssue.type === "dirty_tree") {
-				log(`⚠️ Working tree has uncommitted changes — proceeding anyway`);
-			} else {
-				ctx.ui.notify(`Git issue: ${gitIssue.message} — fix manually and /loop:resume`, "error");
-				await stopLoop(ctx);
-				return;
-			}
-		}
-
-		let showDiff = true;
 		while (true) {
 			state.phase = "awaiting_feedback";
 			const sha = state.commitList[state.currentCommitIdx];
 			if (!sha) { await stopLoop(ctx); return; }
 			const shortSha = sha.slice(0, 7);
 			const subject = getCommitSubject(ctx.cwd, sha);
+			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
+			updateStatus(ctx);
 
-			if (showDiff) {
-				const diff = getCommitDiff(ctx.cwd, sha);
-				log(`📋 Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} — ${subject}`);
-				pi.sendMessage({ customType: "loop-diff", content: `\`\`\`diff\n${diff}\n\`\`\``, display: true }, { triggerTurn: false });
-				statusPrefix = `👀 Commit ${state.currentCommitIdx + 1}/${state.commitList.length} · ${shortSha}`;
-				updateStatus(ctx);
-			}
-			showDiff = false;
-
-			// TUI menu — always in the terminal
-			const action = await ctx.ui.select(
-				`Commit ${state.currentCommitIdx + 1}/${state.commitList.length}: ${shortSha} ${subject}`,
-				["💬 Feedback", "✅ Approve", "⏭ Jump to...", "⏹ Stop"],
-			);
-
-			if (!action) continue;
-
-			if (action.startsWith("💬")) {
-				// Plannotator for rich line-level annotations, editor/input fallback
-				let feedback: string | undefined;
-				if (detectPlannotator()) {
-					const result = await showCommitViaPlannotator(ctx, sha);
-					if (result?.action === "approve") {
-						// User approved in plannotator instead of giving feedback
-						log(`✅ Approved: ${shortSha} — ${subject}`);
-						if (state.currentCommitIdx >= state.commitList.length - 1) {
-							log("✅ All commits reviewed and approved!");
-							if (state.loopStartedAt) {
-								log(`⏱ Total: ${formatDuration(totalElapsed())} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
-							}
-							ctx.ui.notify(`✅ All ${state.commitList.length} commit(s) approved`, "success");
-							await stopLoop(ctx);
-							return;
-						}
-						state.currentCommitIdx++;
-						showDiff = true;
-						continue;
-					}
-					feedback = result?.feedback;
+			// Plannotator path: opens browser, handles approve + feedback
+			if (detectPlannotator()) {
+				const result = await showCommitViaPlannotator(ctx, sha);
+				if (result?.action === "approve") {
+					if (!await advanceCommit(ctx)) return;
+					continue;
 				}
-				if (!feedback) {
-					feedback = typeof ctx.ui.editor === "function"
-						? await ctx.ui.editor("Feedback (Shift+Enter for newline)")
-						: await ctx.ui.input("Feedback");
-				}
-				if (!feedback) continue;
-				await startManualInnerLoop(feedback, ctx);
-				return;
-			}
-
-			if (action.startsWith("✅")) {
-				log(`✅ Approved: ${shortSha} — ${subject}`);
-				if (state.currentCommitIdx >= state.commitList.length - 1) {
-					log("✅ All commits reviewed and approved!");
-					if (state.loopStartedAt) {
-						log(`⏱ Total: ${formatDuration(totalElapsed())} (${formatTime(state.loopStartedAt)} → ${formatTime(Date.now())})`);
-					}
-					ctx.ui.notify(`✅ All ${state.commitList.length} commit(s) approved`, "success");
-					await stopLoop(ctx);
+				if (result?.feedback) {
+					await startManualInnerLoop(result.feedback, ctx);
 					return;
 				}
-				state.currentCommitIdx++;
-				showDiff = true;
+				// Plannotator dismissed — fall through to TUI
+			}
+
+			// TUI path: minimal menu (Esc = stop)
+			const action = await ctx.ui.select(
+				`${shortSha} ${subject} (${state.currentCommitIdx + 1}/${state.commitList.length})`,
+				["Approve", "Feedback"],
+			);
+
+			if (!action) { await stopLoop(ctx); return; } // Esc = stop
+
+			if (action === "Approve") {
+				if (!await advanceCommit(ctx)) return;
 				continue;
 			}
 
-			if (action.startsWith("⏭")) {
-				const items = state.commitList.map((s, i) => {
-					const marker = i === state.currentCommitIdx ? " ← current" : "";
-					const subj = getCommitSubject(ctx.cwd, s);
-					return `${i + 1}. ${s.slice(0, 7)} ${subj}${marker}`;
-				});
-				const picked = await ctx.ui.select("Jump to commit", items);
-				if (!picked) continue;
-				const idx = items.indexOf(picked);
-				if (idx >= 0) {
-					state.currentCommitIdx = idx;
-					showDiff = true;
-				}
-				continue;
-			}
-
-			if (action.startsWith("⏹")) {
-				await stopLoop(ctx);
+			if (action === "Feedback") {
+				const feedback = typeof ctx.ui.editor === "function"
+					? await ctx.ui.editor("Feedback")
+					: await ctx.ui.input("Feedback");
+				if (!feedback) continue;
+				await startManualInnerLoop(feedback, ctx);
 				return;
 			}
 		}
@@ -392,14 +346,8 @@ export default function (pi: ExtensionAPI) {
 		const sha = state.commitList[state.currentCommitIdx];
 		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
 
-		log(`💬 Feedback on ${sha.slice(0, 7)}: ${feedback}`);
-
-		// Reset context — start a clean branch from the anchor
 		if (!await navigateToAnchor(ctx)) return;
-
-		// Snapshot patch-ids before workhorse modifies commits
 		state.patchIdMap = buildPatchIdMap(ctx.cwd, state.commitList);
-
 		await startWorkhorse(overseerText, ctx);
 	}
 
@@ -434,7 +382,6 @@ export default function (pi: ExtensionAPI) {
 
 			// Only show split/squash picker when commit count actually changed
 			if (lost.length > 0 && newList.length !== oldCount) {
-				log(`⚠️ ${lost.length} commit(s) were split or squashed`);
 				const items = newList.map((s, i) => {
 					const subj = getCommitSubject(cwd, s);
 					return `${i + 1}. ${s.slice(0, 7)} ${subj}`;
@@ -584,9 +531,9 @@ export default function (pi: ExtensionAPI) {
 		if (state.mode === "manual" && wasRunning) {
 			const gitIssue = checkGitState(ctx.cwd);
 			if (gitIssue) {
-				const fixed = fixGitState(ctx.cwd, gitIssue);
-				if (fixed) log(`✅ Cleaned up: ${gitIssue.message}`);
-				else if (gitIssue.type !== "dirty_tree") log(`⚠️ ${gitIssue.message} — fix manually`);
+				if (!fixGitState(ctx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
+					ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually`, "warning");
+				}
 			}
 		}
 
@@ -637,9 +584,7 @@ export default function (pi: ExtensionAPI) {
 			log(`✅ APPROVED`);
 			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
-			// Manual mode: inner loop done — re-show commit to user
 			if (state.mode === "manual") {
-				log(`✅ Changes verified — returning to review`);
 				deferIf("reviewing", () => void afterManualInnerLoop(ctx));
 				return;
 			}
@@ -715,34 +660,27 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("loop:manual", {
-		description: "Manual review. Usage: /loop:manual [range] (e.g. HEAD~5..HEAD)",
+		description: "Manual review. Usage: /loop:manual [range]",
 		handler: async (args, ctx) => {
-			if (state.phase !== "idle") { ctx.ui.notify("Loop already running — /loop:stop to cancel", "warning"); return; }
+			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
 			const cfg = loadConfig(ctx.cwd);
 			const trimmedArgs = (args || "").trim();
 
-			let range: string;
-			try {
-				range = resolveRange(ctx.cwd, trimmedArgs);
-			} catch (e: any) {
-				ctx.ui.notify(e.message || "Could not determine commit range", "error");
-				return;
-			}
-
-			const commits = getCommitList(ctx.cwd, range);
-			if (commits.length === 0) {
-				ctx.ui.notify("No commits found in range", "error");
-				return;
-			}
-
-			// Resolve base to concrete SHA for stable re-queries after rebase
-			const basePart = range.split("..")[0];
+			let commits: string[];
 			let resolvedBase: string;
-			try {
-				resolvedBase = execSync(`git rev-parse ${basePart}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
-			} catch {
-				ctx.ui.notify("Could not resolve range base", "error");
-				return;
+
+			if (trimmedArgs) {
+				// Explicit range given
+				const result = resolveCommitRange(ctx, trimmedArgs);
+				if (!result) return;
+				commits = result.commits;
+				resolvedBase = result.base;
+			} else {
+				// Interactive range picker
+				const result = await pickReviewTarget(ctx);
+				if (!result) return;
+				commits = result.commits;
+				resolvedBase = result.base;
 			}
 
 			loopCommandCtx = ctx;
@@ -750,8 +688,8 @@ export default function (pi: ExtensionAPI) {
 				mode: "manual",
 				phase: "awaiting_feedback",
 				round: 0,
-				focus: trimmedArgs || `manual review: ${range}`,
-				initialRequest: `manual review: ${commits.length} commit(s) in ${range}`,
+				focus: `manual review: ${commits.length} commit(s)`,
+				initialRequest: `manual review: ${commits.length} commit(s)`,
 				contextPaths: [],
 				maxRounds: cfg.maxRounds,
 				reviewMode: "incremental",
@@ -764,15 +702,108 @@ export default function (pi: ExtensionAPI) {
 				manualBase: resolvedBase,
 			});
 
-			log(`📝 Manual review · ${commits.length} commit(s) · ${range}`);
 			rememberAnchor(ctx);
 			blockInteractiveEditors();
 			startStatusTimer(ctx);
-			ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
-
 			await showCommitForReview(ctx);
 		},
 	});
+
+	function resolveCommitRange(ctx: any, rangeArg: string): { commits: string[]; base: string } | null {
+		let range: string;
+		try {
+			range = resolveRange(ctx.cwd, rangeArg);
+		} catch (e: any) {
+			ctx.ui.notify(e.message || "Could not determine commit range", "error");
+			return null;
+		}
+		const commits = getCommitList(ctx.cwd, range);
+		if (commits.length === 0) { ctx.ui.notify("No commits found in range", "error"); return null; }
+		const basePart = range.split("..")[0];
+		let base: string;
+		try {
+			base = execSync(`git rev-parse ${basePart}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
+		} catch {
+			ctx.ui.notify("Could not resolve range base", "error");
+			return null;
+		}
+		return { commits, base };
+	}
+
+	async function pickReviewTarget(ctx: any): Promise<{ commits: string[]; base: string } | null> {
+		// Build branch option label
+		let branchLabel = "Branch";
+		try {
+			const range = resolveRange(ctx.cwd, "");
+			const count = getCommitList(ctx.cwd, range).length;
+			if (count > 0) branchLabel = `Branch (${count} commits)`;
+		} catch {}
+
+		const choice = await ctx.ui.select("What to review?", [
+			branchLabel,
+			"Pick a commit",
+			"Staged changes",
+			"Unstaged changes",
+		]);
+
+		if (!choice) return null;
+
+		if (choice.startsWith("Branch")) {
+			return resolveCommitRange(ctx, "");
+		}
+
+		if (choice === "Pick a commit") {
+			return await pickCommits(ctx);
+		}
+
+		if (choice === "Staged changes" || choice === "Unstaged changes") {
+			ctx.ui.notify("Staged/unstaged review coming soon", "info");
+			return null;
+		}
+
+		return null;
+	}
+
+	async function pickCommits(ctx: any): Promise<{ commits: string[]; base: string } | null> {
+		// Show recent commits for selection
+		let allShas: string[];
+		try {
+			allShas = execSync("git log --reverse --format=%H -50", { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
+		} catch {
+			ctx.ui.notify("Could not list commits", "error");
+			return null;
+		}
+		if (allShas.length === 0) { ctx.ui.notify("No commits found", "error"); return null; }
+
+		const items = allShas.map(s => {
+			const subj = getCommitSubject(ctx.cwd, s);
+			return `${s.slice(0, 7)} ${subj}`;
+		});
+
+		// Pick start of range
+		const startPick = await ctx.ui.select("Range start (oldest)", items);
+		if (!startPick) return null;
+		const startIdx = items.indexOf(startPick);
+		if (startIdx < 0) return null;
+
+		// Pick end of range (or same = single commit)
+		const endItems = items.slice(startIdx);
+		const endPick = await ctx.ui.select("Range end (newest) -- same for single commit", endItems);
+		if (!endPick) return null;
+		const endIdx = startIdx + endItems.indexOf(endPick);
+		if (endIdx < startIdx) return null;
+
+		const commits = allShas.slice(startIdx, endIdx + 1);
+		// Base = parent of first selected commit
+		let base: string;
+		try {
+			base = execSync(`git rev-parse ${commits[0]}~1`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
+		} catch {
+			// First commit in repo has no parent
+			base = commits[0];
+		}
+		return { commits, base };
+	}
 
 	pi.registerCommand("loop:resume", {
 		description: "Resume loop from session state",
