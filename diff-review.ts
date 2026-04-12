@@ -30,8 +30,11 @@ function git(cwd: string, ...args: string[]): string {
 	return execSync(`git ${args.join(" ")}`, { ...GIT_OPTS, cwd }).trimEnd();
 }
 
-/** Open a commit diff in $EDITOR for annotation. Returns structured review result. */
-export function reviewCommitInEditor(sha: string, cwd: string): ReviewResult {
+/**
+ * Open a commit diff in $EDITOR for annotation. Returns structured review result.
+ * Pass originalEditor to bypass env overrides (e.g. when EDITOR is blocked during loop).
+ */
+export function reviewCommitInEditor(sha: string, cwd: string, originalEditor?: string): ReviewResult {
 	const diff = git(cwd, "--no-pager", "diff", "--no-ext-diff", `${sha}~1`, sha);
 	const subject = git(cwd, "log", "--format=%s", "-1", sha);
 
@@ -47,7 +50,7 @@ export function reviewCommitInEditor(sha: string, cwd: string): ReviewResult {
 	const editFile = join(tmpdir(), `review-${sha.slice(0, 7)}-${Date.now()}.diff`);
 	writeFileSync(editFile, reviewContent);
 
-	const editor = process.env.EDITOR || process.env.VISUAL || "vim";
+	const editor = originalEditor || process.env.EDITOR || process.env.VISUAL || "vim";
 	const isGui = /code|subl|zed|atom|gedit|mate/i.test(editor);
 	const editorArgs = isGui ? ["--wait", editFile] : [editFile];
 	const result = spawnSync(editor, editorArgs, { stdio: "inherit" });

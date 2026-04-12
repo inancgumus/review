@@ -248,7 +248,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// Overridable for testing via pi.events
-	let reviewFn: (sha: string, cwd: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
+	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
 	if (pi.events?.on) {
 		pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
 	}
@@ -266,7 +266,9 @@ export default function (pi: ExtensionAPI) {
 			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
 			updateStatus(ctx);
 
-			const result = reviewFn(sha, ctx.cwd);
+			// Use the original editor saved before blockInteractiveEditors()
+			const origEditor = savedEnv.EDITOR || savedEnv.VISUAL || process.env.EDITOR || process.env.VISUAL;
+			const result = reviewFn(sha, ctx.cwd, origEditor);
 
 			if (result.approved) {
 				if (!await advanceCommit(ctx)) return;
