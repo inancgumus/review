@@ -108,7 +108,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function log(text: string): void {
-		pi.sendMessage({ customType: "loop-log", content: text, display: true }, { triggerTurn: false });
+		pi.sendMessage({ customType: "loop-log", content: text, display: true }, { triggerTurn: false, deliverAs: "followUp" });
 	}
 
 	function findAnchor(ctx: any): { id: string; data: any } | null {
