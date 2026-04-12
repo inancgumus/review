@@ -1,4 +1,6 @@
-# Manual review mode
+# Manual review mode — Design doc
+
+> **Note:** This is the original design document. The implementation evolved significantly. See [README.md](../README.md) for current behavior. Key differences: single commit (not range), `$EDITOR` annotation (not inline diff), no git state mangling (no detached HEAD), plannotator delegates entirely when enabled.
 
 Human-in-the-loop commit review. You are the reviewer. The overseer supervises the workhorse until your feedback is fully addressed.
 
