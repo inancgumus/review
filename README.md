@@ -1,29 +1,34 @@
 # loop
 
-A [pi](https://github.com/mariozechner/pi-coding-agent) extension that loops two AI models:
+Coding agents generate code in a single pass. Nobody reviews it. The agent moves on, and bugs, missed edge cases, and style issues pile up. You can review everything yourself, but that gets old fast when the agent touches dozens of files, creating unsurmountable code slop churn.
 
-- **Review** — Overseer finds issues, workhorse fixes, overseer re-checks.
-- **Exec** — Orchestrator drip-feeds a plan, workhorse builds step by step.
-- **Manual** — You review a commit, annotate issues, workhorse fixes while the overseer verifies your feedback.
+## How loop helps
 
-## Quick start
+Loop puts a second model in the seat of a reviewer. It reads what the first model wrote, flags problems, and sends the work back for fixes. This repeats until the reviewer approves. You get reviewed code without doing the reviewing yourself. If you want to stay in control, you review the code and loop handles the fixes for you.
 
-### Review
+## Three modes
+
+**Review**: Point it at code, and the reviewer finds issues while the workhorse fixes them. Hands-free.
 
 ```
 /loop fix the authentication bug in cmd/login.go
 ```
 
-### Manual review
+**Exec** takes a plan and builds it step by step. Good for building something from a spec.
 
 ```
-/loop:manual                  # pick a commit from the branch
-/loop:manual abc1234          # review a specific commit
+/loop:exec implement the auth module @docs/plan.md
 ```
 
-The diff opens in `$EDITOR`. Type comments on new lines below the code. No comments = approve. Comments become `file:line` feedback for the workhorse.
+**Manual** puts you in the driver's seat for full control. Pick a commit, annotate the diff in your editor (or browser with [plannotator](https://github.com/inancgumus/plannotator)), and the workhorse fixes what you flagged. The reviewer then verifies the fixes match your intent. You never touch the code yourself.
 
-When [plannotator](https://github.com/inancgumus/plannotator) is enabled, it handles everything in the browser instead.
+```
+/loop:manual
+```
+
+## Manual review
+
+Pick a commit. Annotate in your editor of choice. Let the loop make the changes.
 
 ```diff
  func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -33,48 +38,7 @@ need real token validation, not just empty check
 +        w.WriteHeader(401)
 ```
 
-### Exec
-
-```
-/loop:exec implement the auth module @docs/plan.md @internal/auth/
-```
-
-## Commands
-
-| Command | Purpose |
-|---|---|
-| `/loop [focus] [@path ...]` | Review loop |
-| `/loop:exec [focus] [@path ...]` | Exec loop |
-| `/loop:manual [sha]` | Manual review — pick a commit or pass a SHA |
-| `/loop:stop` | Stop and restore your model |
-| `/loop:resume` | Resume after restart (all modes) |
-| `/loop:rounds <n>` | Change max rounds |
-| `/loop:log` | Browse round logs |
-| `/loop:cfg` | Settings (models, thinking, plannotator toggle) |
-
-## Modes
-
-**Review / Exec** — Fully automatic. Fresh mode (default) re-reads everything each round. Incremental keeps context.
-
-**Manual** — One commit at a time. Opens `$EDITOR` for annotation (or plannotator in browser). Timer only counts agent work. No chat noise — round data in `/loop:log`. Esc on the commit picker cancels.
-
-## Configuration
-
-`~/.pi/agent/settings.json` under `loop`:
-
-```json
-{
-  "overseerModel": "openai/gpt-5.4",
-  "workhorseModel": "anthropic/claude-opus-4-6",
-  "overseerThinking": "xhigh",
-  "workhorseThinking": "xhigh",
-  "maxRounds": 10,
-  "reviewMode": "fresh",
-  "plannotator": true
-}
-```
-
-Set `"plannotator": false` to use `$EDITOR` instead of browser.
+No comments means you approve. Comments get parsed into `file:line` references and sent to the workhorse. The reviewer then verifies the workhorse actually addressed each point. If it didn't, it gets sent back. If [plannotator](https://github.com/inancgumus/plannotator) is installed, it handles the review in the browser instead. Disable it with `/loop:cfg` or `"plannotator": false` in settings.
 
 ## Install
 
