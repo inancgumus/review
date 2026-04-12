@@ -180,26 +180,11 @@ export interface Engine {
 	resume(ctx: any): Promise<void>;
 	onAgentEnd(event: any, ctx: any): void;
 	state: LoopState;
-	log(text: string): void;
-	startManualInnerLoop(feedback: string, ctx: any): Promise<void>;
-	showCommitForReview(ctx: any): Promise<void>;
-	/** Seed round data for debug/demo purposes */
-	seedDebugRound(round: number, overseerText: string, verdict: Verdict, workhorseSummary: string, startedAt: number, endedAt: number, workhorseStartedAt: number): void;
-	detectPlannotator(cwd?: string): boolean;
-	openPlannotator(ctx: any): Promise<{ approved: boolean; feedback?: string } | null>;
-	/** Initialize engine for manual mode (sets loopCommandCtx, anchors, timers). */
-	initManual(overrides: Partial<LoopState>, ctx: any, opts?: { pauseTimer?: boolean }): void;
-	/** Populate state with demo rounds for /loop:debug */
-	seedDemoRounds(): void;
-	/** Pick a single commit from a branch for manual review */
-	pickSingleCommit(ctx: any): Promise<string | null>;
-	/** Resolve a SHA string and its parent base */
-	resolveCommit(sha: string, cwd: string): { commit: string; base: string } | null;
-	/** Full manual mode entry: plannotator detection, commit picking, state init. */
 	startManual(args: string, ctx: any): Promise<void>;
+	seedDemoRounds(): void;
 }
 
-export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
+export function createEngine(pi: ExtensionAPI): Engine {
 	let state: LoopState = newState();
 	let loopCommandCtx: any | null = null;
 	let statusPrefix = "";
@@ -978,16 +963,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 		stop: stopLoop,
 		resume: resumeLoop,
 		onAgentEnd,
-		log,
-		startManualInnerLoop,
-		showCommitForReview,
-		seedDebugRound,
-		detectPlannotator,
-		openPlannotator,
-		initManual,
-		seedDemoRounds,
-		pickSingleCommit,
-		resolveCommit,
 		startManual,
+		seedDemoRounds,
 	};
 }

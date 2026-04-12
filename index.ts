@@ -18,7 +18,7 @@ import { createEngine } from "./engine.js";
 import { showLog } from "./log-view.js";
 
 export default function (pi: ExtensionAPI) {
-	const engine = createEngine(pi, () => loadConfig(engine.state.mode === "manual" ? "" : ""));
+	const engine = createEngine(pi);
 
 	// Block file-modifying tools (edit, write) when the overseer is reviewing.
 	const BLOCKED_TOOLS_DURING_REVIEW = ["edit", "write"];
