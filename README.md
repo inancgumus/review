@@ -1,6 +1,6 @@
 # loop
 
-Coding agents generate code in a single pass. Nobody reviews it. The agent moves on, and bugs, missed edge cases, and style issues pile up. You can review everything yourself, but that gets old fast when the agent touches dozens of files, creating unsurmountable code slop churn.
+Coding agents generate code in a single pass. If you don't review it, the agent moves on, and bugs, missed edge cases, and style issues pile up. You can review everything yourself, but that gets old fast when the agent touches dozens of files, creating unsurmountable code slop churn.
 
 ## How loop helps
 
@@ -31,11 +31,11 @@ Loop puts a second model in the seat of a reviewer. It reads what the first mode
 Pick a commit. Annotate in your editor of choice. Let the loop make the changes.
 
 ```diff
- func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-     token := r.Header.Get("Authorization")
-+    if token == "" {
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+    token := r.Header.Get("Authorization")
++   if token == "" {
 need real token validation, not just empty check
-+        w.WriteHeader(401)
++     w.WriteHeader(401)
 ```
 
 No comments means you approve. Comments get parsed into `file:line` references and sent to the workhorse. The reviewer then verifies the workhorse actually addressed each point. If it didn't, it gets sent back. If [plannotator](https://github.com/inancgumus/plannotator) is installed, it handles the review in the browser instead. Disable it with `/loop:cfg` or `"plannotator": false` in settings.
