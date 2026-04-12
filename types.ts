@@ -73,7 +73,6 @@ export interface LoopState {
 	// Manual mode
 	commitList: string[];
 	currentCommitIdx: number;
-	patchIdMap: Map<string, string>;
 	userFeedback: string;
 	manualInnerRound: number;
 	manualBase: string;
@@ -107,7 +106,6 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		roundStartedAt: 0,
 		commitList: [],
 		currentCommitIdx: 0,
-		patchIdMap: new Map(),
 		userFeedback: "",
 		manualInnerRound: 0,
 		manualBase: "",

@@ -67,21 +67,6 @@ function getCommitSubject(cwd: string, sha: string): string {
 	}
 }
 
-/** Map each commit's stable patch-id to its SHA. */
-function buildPatchIdMap(cwd: string, shas: string[]): Map<string, string> {
-	const map = new Map<string, string>();
-	for (const sha of shas) {
-		try {
-			const out = execSync(`git diff-tree -p ${sha} | git patch-id --stable`, opts(cwd)).trim();
-			const patchId = out.split(/\s/)[0] || "";
-			if (patchId) map.set(patchId, sha);
-		} catch {
-			// skip commits without a diff (e.g. empty)
-		}
-	}
-	return map;
-}
-
 export interface GitStateIssue {
 	type: "rebase_in_progress" | "detached_head" | "dirty_tree";
 	message: string;
@@ -353,7 +338,6 @@ export const git = {
 	gitToplevel,
 	resolveRange,
 	getCommitSubject,
-	buildPatchIdMap,
 	checkGitState,
 	fixGitState,
 	extractTaggedSHAs,

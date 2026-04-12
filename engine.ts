@@ -405,7 +405,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
 
 		if (!await navigateToAnchor(ctx)) return;
-		state.patchIdMap = git.buildPatchIdMap(ctx.cwd, state.commitList);
 		await startWorkhorse(overseerText, ctx);
 	}
 
@@ -677,7 +676,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				loopStartedAt: Date.now(),
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-				patchIdMap: git.buildPatchIdMap(ctx.cwd, commits),
 				manualBase: anchor.data.manualBase ?? "",
 			});
 			blockInteractiveEditors();
@@ -764,7 +762,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 			commitList: [commit], currentCommitIdx: 0,
-			patchIdMap: git.buildPatchIdMap(ctx.cwd, [commit]),
 			manualBase: resolvedBase,
 		}, ctx, { pauseTimer: true });
 
