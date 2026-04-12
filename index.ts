@@ -394,7 +394,7 @@ export default function (pi: ExtensionAPI) {
 		const summaryText = `[Workhorse Round ${state.round}] ${summary}`;
 		state.workhorseSummaries.push(summaryText);
 		recordWorkhorse(state.round, summaryText);
-		log(`🔧 Workhorse done\n${summary}`);
+		if (state.mode !== "manual") log(`🔧 Workhorse done\n${summary}`);
 
 		// Detect changed @path files
 		if (state.contextHashes && state.contextPaths.length > 0) {
@@ -421,7 +421,7 @@ export default function (pi: ExtensionAPI) {
 		const now = Date.now();
 		const rr = state.roundResults.find(r => r.round === state.round);
 		if (rr) rr.endedAt = now;
-		if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
+		if (state.mode !== "manual" && state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
 		state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
@@ -484,8 +484,6 @@ export default function (pi: ExtensionAPI) {
 			const now = Date.now();
 			const rr = state.roundResults.find(r => r.round === state.round);
 			if (rr) rr.endedAt = now;
-			log(`✅ APPROVED`);
-			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
 			if (state.mode === "manual") {
 				pauseTimer();
@@ -493,13 +491,15 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			log(`✅ APPROVED`);
+			if (state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 			deferIf("reviewing", () => { ctx.ui.notify(`✅ Approved after ${state.round} round(s)`, "success"); stopLoop(ctx); });
 			return;
 		}
 		if (verdict === "changes_requested") {
 			recordOverseer(state.round, "changes_requested", text);
 			const summary = sanitize(stripVerdict(text));
-			log(`❌ CHANGES REQUESTED\n${summary}`);
+			if (state.mode !== "manual") log(`❌ CHANGES REQUESTED\n${summary}`);
 			deferIf("reviewing", () => {
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`⚠️ Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
 				void continueLoop(ctx, { type: "workhorse", overseerText: text });
