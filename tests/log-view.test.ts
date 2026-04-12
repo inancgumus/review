@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import loopExtension from "../index.ts";
 import { V_FIXES_COMPLETE, V_APPROVED, V_CHANGES } from "../verdicts.ts";
-import { loadPiAgent } from "../tui-runtime.ts";
+import { loadPiAgent } from "../log-view.ts";
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
