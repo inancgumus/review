@@ -330,3 +330,24 @@ test("/loop:manual single commit picker (no args)", async () => {
 		repo.cleanup();
 	}
 });
+
+test("/loop:manual inner loop starts at round 1", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha = addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+		h.reviewResults.push({ approved: false, feedback: "fix it" });
+
+		let lastStatus = "";
+		h.ctx.ui.setStatus = (key: string, text: string) => { if (key === "loop") lastStatus = text || ""; };
+
+		await h.commands.get("loop:manual")!(sha, h.ctx);
+
+		// Status should show Round 1, not Round 0
+		assert.ok(lastStatus.includes("Round 1"), `status should show Round 1, got: ${lastStatus}`);
+		assert.ok(!lastStatus.includes("Round 0"), `status should NOT show Round 0, got: ${lastStatus}`);
+	} finally {
+		repo.cleanup();
+	}
+});
