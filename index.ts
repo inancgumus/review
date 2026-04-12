@@ -326,7 +326,7 @@ export default function (pi: ExtensionAPI) {
 		state.phase = "reviewing";
 		state.roundStartedAt = Date.now();
 		state.overseerLeafId = null;
-		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.overseerModel} reviewing`;
+		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.overseerModel} reviewing`;
 		updateStatus(ctx);
 		if (state.mode !== "manual") log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
@@ -375,7 +375,7 @@ export default function (pi: ExtensionAPI) {
 		state.phase = "fixing";
 		const rr = state.roundResults.find(r => r.round === state.round);
 		if (rr) rr.workhorseStartedAt = Date.now();
-		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.workhorseModel} fixing`;
+		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.workhorseModel} fixing`;
 		updateStatus(ctx);
 		if (state.mode !== "manual") log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
