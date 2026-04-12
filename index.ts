@@ -178,10 +178,11 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Plannotator integration ───────────────────────
 
-	function detectPlannotator(): boolean {
-		if (state.hasPlannotator !== null) return state.hasPlannotator;
-		const cfg = loadConfig(loopCommandCtx?.cwd || "");
+	function detectPlannotator(cwd?: string): boolean {
+		// Always re-check config (don't use cached value — config may have changed)
+		const cfg = loadConfig(cwd || loopCommandCtx?.cwd || "");
 		if (!cfg.plannotator) { state.hasPlannotator = false; return false; }
+		if (state.hasPlannotator !== null) return state.hasPlannotator;
 		if (!pi.events?.emit) { state.hasPlannotator = false; return false; }
 		// Synchronous detection — plannotator's review-status handler responds synchronously
 		let responded = false;
@@ -457,8 +458,8 @@ export default function (pi: ExtensionAPI) {
 		if (!model) { ctx.ui.notify(`Could not restore model: ${state.originalModelStr}`, "error"); return; }
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking);
-		const elapsed = state.loopStartedAt ? formatDuration(totalElapsed()) : "0s";
-		ctx.ui.notify(`Loop ended. ${elapsed} elapsed.`, "info");
+		const elapsed = totalElapsed();
+		if (elapsed > 1000) ctx.ui.notify(`Loop ended. ${formatDuration(elapsed)} elapsed.`, "info");
 	}
 
 	// ── agent_end ───────────────────────────────────────
@@ -571,7 +572,7 @@ export default function (pi: ExtensionAPI) {
 			const trimmedArgs = (args || "").trim();
 
 			// Plannotator: delegate everything (commit selection, diff, annotation)
-			if (detectPlannotator() && !trimmedArgs) {
+			if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
 				loopCommandCtx = ctx;
 				state = newState({
 					mode: "manual", phase: "awaiting_feedback", round: 0,
