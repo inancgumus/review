@@ -327,7 +327,7 @@ export default function (pi: ExtensionAPI) {
 		state.overseerLeafId = null;
 		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${cfg.overseerModel} reviewing`;
 		updateStatus(ctx);
-		log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
+		if (state.mode !== "manual") log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
@@ -376,7 +376,7 @@ export default function (pi: ExtensionAPI) {
 		if (rr) rr.workhorseStartedAt = Date.now();
 		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${cfg.workhorseModel} fixing`;
 		updateStatus(ctx);
-		log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
+		if (state.mode !== "manual") log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
 		// Manual mode: ensure commit SHA prefix is present
 		let workhorseInput = overseerText;
@@ -458,7 +458,7 @@ export default function (pi: ExtensionAPI) {
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking);
 		const elapsed = state.loopStartedAt ? formatDuration(totalElapsed()) : "0s";
-		log(`Loop ended. ${elapsed} elapsed. Restored ${state.originalModelStr}.`);
+		ctx.ui.notify(`Loop ended. ${elapsed} elapsed.`, "info");
 	}
 
 	// ── agent_end ───────────────────────────────────────

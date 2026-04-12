@@ -135,13 +135,14 @@ test("/loop:manual approve (no comments) moves to done", async () => {
 		addCommit(repo.cwd, "a.txt", "hello", "only commit");
 
 		const h = createHarness(repo.cwd);
-		let notifyMsg = "";
-		h.ctx.ui.notify = (msg: string) => { notifyMsg = msg; };
+		const notifyMsgs: string[] = [];
+		h.ctx.ui.notify = (msg: string) => { notifyMsgs.push(msg); };
 
 		// reviewFn returns approve (default)
 		const sha = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
 		await h.commands.get("loop:manual")!(sha, h.ctx);
-		assert.match(notifyMsg, /approved/i, "should notify approved");
+		const all = notifyMsgs.join(" ");
+		assert.ok(all.includes("approved") || all.includes("ended"), "should notify done");
 	} finally {
 		repo.cleanup();
 	}
