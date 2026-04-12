@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 10000 };
 
-export interface Annotation {
+interface Annotation {
 	file: string;
 	startLine: number;
 	endLine: number;
@@ -19,7 +19,7 @@ export interface Annotation {
 	comment: string;
 }
 
-export interface ReviewResult {
+interface ReviewResult {
 	approved: boolean;
 	annotations: Annotation[];
 	/** Formatted feedback string for the workhorse, or empty if approved. */
@@ -88,7 +88,7 @@ export function reviewCommitInEditor(sha: string, cwd: string, originalEditor?: 
 }
 
 /** Parse annotations by walking original and edited diff in parallel. */
-export function parseAnnotations(originalContent: string, editedContent: string): Annotation[] {
+function parseAnnotations(originalContent: string, editedContent: string): Annotation[] {
 	const origLines = originalContent.split("\n");
 	const editedLines = editedContent.split("\n");
 

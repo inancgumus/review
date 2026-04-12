@@ -8,7 +8,7 @@ const opts = (cwd: string) => ({ cwd, encoding: "utf-8" as const, timeout: 10000
  * Resolve the git toplevel. Tries cwd, process.cwd(), then extracts
  * the project path from the first user message (pi passes the opened dir as the first message).
  */
-export function gitToplevel(cwd: string, sessionEntries?: any[]): string {
+function gitToplevel(cwd: string, sessionEntries?: any[]): string {
 	for (const dir of [cwd, process.cwd()]) {
 		try { return execSync("git rev-parse --show-toplevel", opts(dir)).trim(); }
 		catch { /* not a git repo */ }
@@ -34,7 +34,7 @@ export function gitToplevel(cwd: string, sessionEntries?: any[]): string {
  * If rangeArg is non-empty, return it as-is.
  * Otherwise detect merge-base with main (fallback master) and return `<base>..HEAD`.
  */
-export function resolveRange(cwd: string, rangeArg: string): string {
+function resolveRange(cwd: string, rangeArg: string): string {
 	if (rangeArg) return rangeArg;
 
 	const head = execSync("git rev-parse HEAD", opts(cwd)).trim();
@@ -58,19 +58,8 @@ export function resolveRange(cwd: string, rangeArg: string): string {
 	throw new Error("Unable to determine range: no main or master branch and no root commit found");
 }
 
-/** Return full SHAs in chronological order for the given range. */
-export function getCommitList(cwd: string, range: string): string[] {
-	try {
-		const out = execSync(`git log --reverse --format=%H ${range}`, opts(cwd)).trim();
-		if (!out) return [];
-		return out.split("\n").filter(Boolean);
-	} catch {
-		return [];
-	}
-}
-
 /** Return the subject line for a single commit. */
-export function getCommitSubject(cwd: string, sha: string): string {
+function getCommitSubject(cwd: string, sha: string): string {
 	try {
 		return execSync(`git log --format=%s -1 ${sha}`, opts(cwd)).trim();
 	} catch {
@@ -78,17 +67,8 @@ export function getCommitSubject(cwd: string, sha: string): string {
 	}
 }
 
-/** Return combined stat + patch output for a single commit. */
-export function getCommitDiff(cwd: string, sha: string): string {
-	try {
-		return execSync(`git show --stat --patch ${sha}`, opts(cwd)).trim();
-	} catch {
-		return "";
-	}
-}
-
 /** Map each commit's stable patch-id to its SHA. */
-export function buildPatchIdMap(cwd: string, shas: string[]): Map<string, string> {
+function buildPatchIdMap(cwd: string, shas: string[]): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const sha of shas) {
 		try {
@@ -108,7 +88,7 @@ export interface GitStateIssue {
 }
 
 /** Check for git state issues that could break manual mode operations. */
-export function checkGitState(cwd: string, expectedBranch?: string): GitStateIssue | null {
+function checkGitState(cwd: string, expectedBranch?: string): GitStateIssue | null {
 	try {
 		const gitDir = execSync("git rev-parse --git-dir", opts(cwd)).trim();
 		const absGitDir = gitDir.startsWith("/") ? gitDir : join(cwd, gitDir);
@@ -139,7 +119,7 @@ export function checkGitState(cwd: string, expectedBranch?: string): GitStateIss
 }
 
 /** Attempt to fix common git state issues. Returns true if fixed. */
-export function fixGitState(cwd: string, issue: GitStateIssue, targetBranch?: string): boolean {
+function fixGitState(cwd: string, issue: GitStateIssue, targetBranch?: string): boolean {
 	try {
 		switch (issue.type) {
 			case "rebase_in_progress":
@@ -160,41 +140,13 @@ export function fixGitState(cwd: string, issue: GitStateIssue, targetBranch?: st
 	}
 }
 
-/**
- * After a rebase, match old patch-ids to new ones.
- * Returns the new commit list, a remap of old→new SHAs, and SHAs whose
- * patch-id disappeared (squashed/split).
- */
-export function remapAfterRebase(
-	cwd: string,
-	range: string,
-	oldMap: Map<string, string>,
-): { newList: string[]; remap: Map<string, string>; lost: string[] } {
-	const newList = getCommitList(cwd, range);
-	const newMap = buildPatchIdMap(cwd, newList);
-
-	const remap = new Map<string, string>();
-	const lost: string[] = [];
-
-	for (const [patchId, oldSha] of oldMap) {
-		const newSha = newMap.get(patchId);
-		if (newSha) {
-			remap.set(oldSha, newSha);
-		} else {
-			lost.push(oldSha);
-		}
-	}
-
-	return { newList, remap, lost };
-}
-
 // ── Fixup audit ─────────────────────────────────────────
 
 /**
  * Extract short commit SHAs (7-12 hex chars) referenced in overseer text.
  * Looks near "commit" keywords, in backticks, in --fixup refs, and at line starts.
  */
-export function extractTaggedSHAs(text: string): string[] {
+function extractTaggedSHAs(text: string): string[] {
 	const shas = new Set<string>();
 
 	// SHAs in backticks: `abc1234`
@@ -225,7 +177,7 @@ export function extractTaggedSHAs(text: string): string[] {
  * Returns Map<fullSha, patchId>. Keyed by SHA so duplicate subjects
  * are tracked independently. Empty base means "all commits from root".
  */
-export function snapshotPatchIds(cwd: string, base: string): Map<string, string> {
+function snapshotPatchIds(cwd: string, base: string): Map<string, string> {
 	const map = new Map<string, string>();
 	try {
 		const cmd = base
@@ -253,7 +205,7 @@ export function snapshotPatchIds(cwd: string, base: string): Map<string, string>
  * Resolve short SHAs to full SHAs with subjects. No dedup —
  * two commits with the same subject produce two entries.
  */
-export function resolveTaggedCommits(cwd: string, shortShas: string[]): Array<{ sha: string; subject: string }> {
+function resolveTaggedCommits(cwd: string, shortShas: string[]): Array<{ sha: string; subject: string }> {
 	const commits: Array<{ sha: string; subject: string }> = [];
 	for (const s of shortShas) {
 		try {
@@ -275,7 +227,7 @@ export function resolveTaggedCommits(cwd: string, shortShas: string[]): Array<{ 
  * Find the parent of the oldest tagged commit — used as the base for snapshotting.
  * Returns null if resolution fails, "" for root commits (no parent).
  */
-export function findSnapshotBase(cwd: string, shas: string[]): string | null {
+function findSnapshotBase(cwd: string, shas: string[]): string | null {
 	const resolved = shas.map(s => {
 		try {
 			return execSync(`git rev-parse ${s}`, { cwd, encoding: "utf-8", timeout: 5000 }).trim();
@@ -309,7 +261,7 @@ export function findSnapshotBase(cwd: string, shas: string[]): string | null {
  * Given before/after snapshots (keyed by SHA) and tagged commits,
  * return subjects whose patch-id still exists unchanged in the after set.
  */
-export function detectUnchanged(
+function detectUnchanged(
 	before: Map<string, string>,
 	after: Map<string, string>,
 	taggedCommits: Array<{ sha: string; subject: string }>,
@@ -329,7 +281,7 @@ export function detectUnchanged(
  * Find oldSha's replacement after a rewrite (amend/rebase).
  * Returns the new SHA, or null if the commit was lost (squashed/dropped).
  */
-export function remapCommit(cwd: string, oldSha: string): string | null {
+function remapCommit(cwd: string, oldSha: string): string | null {
 	// Still an ancestor of HEAD? No rewrite.
 	try {
 		execSync(`git merge-base --is-ancestor ${oldSha} HEAD`, opts(cwd));
@@ -394,3 +346,20 @@ export function remapCommit(cwd: string, oldSha: string): string | null {
 	// Lost (squashed, dropped)
 	return null;
 }
+
+// ── Public facade ───────────────────────────────────────
+
+export const git = {
+	gitToplevel,
+	resolveRange,
+	getCommitSubject,
+	buildPatchIdMap,
+	checkGitState,
+	fixGitState,
+	extractTaggedSHAs,
+	snapshotPatchIds,
+	resolveTaggedCommits,
+	findSnapshotBase,
+	detectUnchanged,
+	remapCommit,
+};

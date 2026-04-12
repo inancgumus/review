@@ -56,7 +56,7 @@ function safeDirEntries(dirPath: string): fs.Dirent[] {
 }
 
 /** Re-read @path files from disk. Called before each overseer/workhorse prompt. */
-export function expandContextPaths(paths: string[]): string {
+function expandContextPaths(paths: string[]): string {
 	if (paths.length === 0) return "";
 	const parts: string[] = [];
 	for (const p of paths) {
@@ -92,7 +92,7 @@ export function changedContextPaths(paths: string[], before: Map<string, string>
 
 // ── Review prompts ──────────────────────────────────────
 
-export const reviewPrompts: PromptSet = {
+const reviewPrompts: PromptSet = {
 	buildOverseerPrompt: reviewOverseerPrompt,
 	buildWorkhorsePrompt: reviewWorkhorsePrompt,
 };
@@ -244,7 +244,7 @@ function reviewWorkhorsePrompt(overseerText: string, contextPaths: string[], rou
 
 // ── Exec prompts ────────────────────────────────────────
 
-export const execPrompts: PromptSet = {
+const execPrompts: PromptSet = {
 	buildOverseerPrompt: execOverseerPrompt,
 	buildWorkhorsePrompt: execWorkhorsePrompt,
 };
@@ -383,7 +383,7 @@ function execWorkhorsePrompt(overseerText: string, _contextPaths: string[], roun
 
 // ── Manual prompts ──────────────────────────────────────
 
-export const manualPrompts: PromptSet = {
+const manualPrompts: PromptSet = {
 	buildOverseerPrompt: manualOverseerPrompt,
 	buildWorkhorsePrompt: manualWorkhorsePrompt,
 };
@@ -502,11 +502,4 @@ export const promptSets: Record<LoopMode, PromptSet> = {
 	manual: manualPrompts,
 };
 
-// Backward-compat exports (used by index.ts for the default loop mode)
-export function buildOverseerPrompt(p: OverseerPromptParams): string {
-	return promptSets.review.buildOverseerPrompt(p);
-}
 
-export function buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number): string {
-	return promptSets.review.buildWorkhorsePrompt(overseerText, contextPaths, round);
-}

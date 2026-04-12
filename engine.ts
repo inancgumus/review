@@ -10,23 +10,23 @@ import { loadConfig } from "./config.js";
 import { parseArgs } from "./context.js";
 import { promptSets, snapshotContextHashes, changedContextPaths as findChangedContextPaths } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict, V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
-import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase, resolveRange, getCommitSubject, buildPatchIdMap, checkGitState, fixGitState, gitToplevel } from "./git.js";
+import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
 import { execSync } from "node:child_process";
 
 // ── Session helpers (absorbed from session.ts) ──────────
 
 /** Strip C0/C1/DEL/zero-width/line separator chars. */
-export function sanitize(text: string): string {
+function sanitize(text: string): string {
 	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
 }
 
-export function modelToStr(model: any): string {
+function modelToStr(model: any): string {
 	if (!model) return "";
 	return `${model.provider}/${model.id}`;
 }
 
-export function findModel(modelStr: string, ctx: any): any | null {
+function findModel(modelStr: string, ctx: any): any | null {
 	const idx = modelStr.indexOf("/");
 	if (idx === -1) return null;
 	return ctx.modelRegistry.find(modelStr.slice(0, idx), modelStr.slice(idx + 1));
@@ -66,7 +66,7 @@ interface RecoveredState {
 	overseerLeafId: string | null;
 }
 
-export function reconstructState(ctx: any): RecoveredState | null {
+function reconstructState(ctx: any): RecoveredState | null {
 	const entries = ctx.sessionManager.getBranch();
 	let lastWorkhorseRound = 0;
 	let lastOverseerText = "";
@@ -357,9 +357,9 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 	// ── Commit review UI ───────────────────────
 
 	function recoverGitState(ctx: any): boolean {
-		const gitIssue = checkGitState(ctx.cwd);
+		const gitIssue = git.checkGitState(ctx.cwd);
 		if (!gitIssue) return true;
-		const fixed = fixGitState(ctx.cwd, gitIssue);
+		const fixed = git.fixGitState(ctx.cwd, gitIssue);
 		if (fixed) return true;
 		if (gitIssue.type === "dirty_tree") return true;
 		ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually, then /loop:resume`, "error");
@@ -390,7 +390,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 			const sha = state.commitList[state.currentCommitIdx];
 			if (!sha) { await stopLoop(ctx); return; }
 			const shortSha = sha.slice(0, 7);
-			const subject = getCommitSubject(ctx.cwd, sha);
+			const subject = git.getCommitSubject(ctx.cwd, sha);
 			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
 			updateStatus(ctx);
 
@@ -420,7 +420,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
 
 		if (!await navigateToAnchor(ctx)) return;
-		state.patchIdMap = buildPatchIdMap(ctx.cwd, state.commitList);
+		state.patchIdMap = git.buildPatchIdMap(ctx.cwd, state.commitList);
 		await startWorkhorse(overseerText, ctx);
 	}
 
@@ -483,13 +483,13 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 			if (state.contextPaths.length > 0) {
 				state.contextHashes = snapshotContextHashes(state.contextPaths);
 			}
-			const taggedSHAs = extractTaggedSHAs(overseerText);
+			const taggedSHAs = git.extractTaggedSHAs(overseerText);
 			if (taggedSHAs.length > 1) {
-				const base = findSnapshotBase(ctx.cwd, taggedSHAs);
+				const base = git.findSnapshotBase(ctx.cwd, taggedSHAs);
 				if (base) {
-					state.patchSnapshot = snapshotPatchIds(ctx.cwd, base);
+					state.patchSnapshot = git.snapshotPatchIds(ctx.cwd, base);
 					state.snapshotBase = base;
-					state.taggedSubjects = resolveSubjects(ctx.cwd, taggedSHAs);
+					state.taggedSubjects = git.resolveSubjects(ctx.cwd, taggedSHAs);
 					log(`[Snapshot] ${state.taggedSubjects.length} tagged commits, ${state.patchSnapshot.size} in range`);
 				}
 			}
@@ -532,8 +532,8 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 
 		const cwd = loopCommandCtx?.cwd || eventCtx?.cwd;
 		if (state.patchSnapshot && state.snapshotBase && state.taggedSubjects.length > 0 && cwd) {
-			const after = snapshotPatchIds(cwd, state.snapshotBase);
-			state.unchangedCommits = detectUnchanged(state.patchSnapshot, after, state.taggedSubjects);
+			const after = git.snapshotPatchIds(cwd, state.snapshotBase);
+			state.unchangedCommits = git.detectUnchanged(state.patchSnapshot, after, state.taggedSubjects);
 			if (state.unchangedCommits.length > 0) {
 				log(`⚠️ Unchanged commits: ${state.unchangedCommits.join(", ")}`);
 			}
@@ -558,9 +558,9 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 		state.phase = "idle";
 
 		if (mode === "manual" && wasRunning) {
-			const gitIssue = checkGitState(ctx.cwd);
+			const gitIssue = git.checkGitState(ctx.cwd);
 			if (gitIssue) {
-				if (!fixGitState(ctx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
+				if (!git.fixGitState(ctx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
 					ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually`, "warning");
 				}
 			}
@@ -692,7 +692,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 				loopStartedAt: Date.now(),
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-				patchIdMap: buildPatchIdMap(ctx.cwd, commits),
+				patchIdMap: git.buildPatchIdMap(ctx.cwd, commits),
 				manualBase: anchor.data.manualBase ?? "",
 			});
 			blockInteractiveEditors();
@@ -727,7 +727,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 
 	async function startManual(args: string, ctx: any): Promise<void> {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
-		ctx.cwd = gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
+		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
 
@@ -779,7 +779,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 			commitList: [commit], currentCommitIdx: 0,
-			patchIdMap: buildPatchIdMap(ctx.cwd, [commit]),
+			patchIdMap: git.buildPatchIdMap(ctx.cwd, [commit]),
 			manualBase: resolvedBase,
 		}, ctx, { pauseTimer: true });
 
@@ -953,7 +953,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 
 	async function pickSingleCommit(ctx: any): Promise<string | null> {
 		let range: string;
-		try { range = resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
+		try { range = git.resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
 
 		let branchShas: string[];
 		try {
@@ -964,7 +964,7 @@ export function createEngine(pi: ExtensionAPI, config: () => Config): Engine {
 		}
 		if (branchShas.length === 0) { ctx.ui.notify("No commits on this branch", "error"); return null; }
 
-		const items = branchShas.map(s => `${s.slice(0, 7)} ${getCommitSubject(ctx.cwd, s)}`);
+		const items = branchShas.map(s => `${s.slice(0, 7)} ${git.getCommitSubject(ctx.cwd, s)}`);
 		const picked = await ctx.ui.select("Pick a commit to review", items);
 		if (!picked) return null;
 		const idx = items.indexOf(picked);
