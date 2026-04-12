@@ -74,6 +74,16 @@ export default function (pi: ExtensionAPI) {
 		return Date.now() - state.loopStartedAt - state.pausedElapsed;
 	}
 
+	// Block file-modifying tools (edit, write) when the overseer is reviewing.
+	// The overseer should only read code and run git commands, never modify files.
+	const BLOCKED_TOOLS_DURING_REVIEW = ["edit", "write"];
+	pi.on("tool_call", async (event) => {
+		if (state.phase !== "reviewing") return;
+		if (BLOCKED_TOOLS_DURING_REVIEW.includes(event.toolName)) {
+			return { block: true, reason: "You are the OVERSEER — do not edit or write files. Only use read and bash (for git/grep/find/ls). Report issues with file, line, what's wrong, and how to fix." };
+		}
+	});
+
 	function updateStatus(ctx: any): void {
 		if (state.phase === "idle" || !statusPrefix) return;
 		const now = Date.now();
