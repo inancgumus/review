@@ -23,6 +23,7 @@ import { reconstructState } from "./reconstruct.js";
 import { showLog } from "./log-view.js";
 import { extractTaggedSHAs, snapshotPatchIds, detectUnchanged, resolveSubjects, findSnapshotBase } from "./fixup-audit.js";
 import { resolveRange, getCommitList, getCommitDiff, getCommitSubject, buildPatchIdMap, remapAfterRebase, checkGitState, fixGitState } from "./git-manual.js";
+import { reviewCommitInEditor } from "./diff-review.js";
 import { execSync } from "node:child_process";
 
 // Block interactive editors during agent turns.
@@ -194,56 +195,19 @@ export default function (pi: ExtensionAPI) {
 		return responded;
 	}
 
-	async function showCommitViaPlannotator(ctx: any, sha: string): Promise<{ action: "approve" | "feedback" | "stop"; feedback?: string } | null> {
-		const cwd = ctx.cwd;
-
-		// Save current ref so we can restore after plannotator
-		let originalRef: string;
-		try {
-			originalRef = execSync("git symbolic-ref -q HEAD 2>/dev/null || git rev-parse HEAD", { ...GIT_OPTS, cwd }).trim();
-		} catch { return null; }
-		const originalBranch = originalRef.startsWith("refs/heads/") ? originalRef.slice(11) : null;
-
-		// Detach HEAD at the commit so "last-commit" shows its diff
-		try {
-			execSync(`git checkout ${sha} --detach --quiet`, { ...GIT_OPTS, cwd });
-		} catch { return null; }
-
-		try {
-			const result = await new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
-				pi.events.emit("plannotator:request", {
-					requestId: `loop-review-${Date.now()}`,
-					action: "code-review",
-					payload: { diffType: "last-commit", cwd },
-					respond: (response: any) => {
-						if (response?.status === "handled" && response.result) resolve(response.result);
-						else resolve(null);
-					},
-				});
+	/** Plannotator handles commit selection + diff + annotation. No git state mangling. */
+	async function openPlannotator(ctx: any): Promise<{ approved: boolean; feedback?: string } | null> {
+		return new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
+			pi.events.emit("plannotator:request", {
+				requestId: `loop-review-${Date.now()}`,
+				action: "code-review",
+				payload: { diffType: "branch", cwd: ctx.cwd },
+				respond: (response: any) => {
+					if (response?.status === "handled" && response.result) resolve(response.result);
+					else resolve(null);
+				},
 			});
-
-			if (!result) return null;
-			if (result.approved) return { action: "approve" };
-			if (result.feedback) return { action: "feedback", feedback: result.feedback };
-			return null;
-		} finally {
-			// Restore original HEAD — critical, workhorse needs to be on the right branch
-			try {
-				if (originalBranch) {
-					execSync(`git checkout ${originalBranch} --quiet`, { ...GIT_OPTS, cwd });
-				} else {
-					execSync(`git checkout ${originalRef} --detach --quiet`, { ...GIT_OPTS, cwd });
-				}
-				// Verify restore succeeded
-				const currentHead = execSync("git rev-parse HEAD", { ...GIT_OPTS, cwd }).trim();
-				const expectedHead = execSync(`git rev-parse ${originalBranch || originalRef}`, { ...GIT_OPTS, cwd }).trim();
-				if (currentHead !== expectedHead) {
-					execSync(`git checkout ${originalBranch || originalRef} --force --quiet`, { ...GIT_OPTS, cwd });
-				}
-			} catch {
-				// Best effort -- stopLoop will detect and clean up
-			}
-		}
+		});
 	}
 
 	// ── Time tracking ───────────────────────────
@@ -283,6 +247,12 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
+	// Overridable for testing via pi.events
+	let reviewFn: (sha: string, cwd: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
+	if (pi.events?.on) {
+		pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
+	}
+
 	async function showCommitForReview(ctx: any): Promise<void> {
 		pauseTimer();
 		if (!recoverGitState(ctx)) { await stopLoop(ctx); return; }
@@ -296,42 +266,15 @@ export default function (pi: ExtensionAPI) {
 			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
 			updateStatus(ctx);
 
-			// Plannotator: open automatically, user reviews in browser
-			if (detectPlannotator()) {
-				ctx.ui.notify(`Opening ${shortSha} ${subject} in browser...`, "info");
-				const result = await showCommitViaPlannotator(ctx, sha);
-				if (result?.action === "approve") {
-					if (!await advanceCommit(ctx)) return;
-					continue;
-				}
-				if (result?.feedback) {
-					await startManualInnerLoop(result.feedback, ctx);
-					return;
-				}
-				// Dismissed — fall through to TUI
-			}
+			const result = reviewFn(sha, ctx.cwd);
 
-			// TUI fallback (no plannotator or dismissed)
-			const action = await ctx.ui.select(
-				`${shortSha} ${subject} (${state.currentCommitIdx + 1}/${state.commitList.length})`,
-				["Approve", "Feedback"],
-			);
-
-			if (!action) { await stopLoop(ctx); return; } // Esc = stop
-
-			if (action === "Approve") {
+			if (result.approved) {
 				if (!await advanceCommit(ctx)) return;
 				continue;
 			}
 
-			if (action === "Feedback") {
-				const feedback = typeof ctx.ui.editor === "function"
-					? await ctx.ui.editor("Feedback")
-					: await ctx.ui.input("Feedback");
-				if (!feedback) continue;
-				await startManualInnerLoop(feedback, ctx);
-				return;
-			}
+			await startManualInnerLoop(result.feedback, ctx);
+			return;
 		}
 	}
 
@@ -661,45 +604,72 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("loop:manual", {
-		description: "Manual review. Usage: /loop:manual [range]",
+		description: "Manual review. Usage: /loop:manual [sha]",
 		handler: async (args, ctx) => {
 			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
 			const cfg = loadConfig(ctx.cwd);
 			const trimmedArgs = (args || "").trim();
 
-			let commits: string[];
+			// Plannotator: delegate everything (commit selection, diff, annotation)
+			if (detectPlannotator() && !trimmedArgs) {
+				loopCommandCtx = ctx;
+				state = newState({
+					mode: "manual", phase: "awaiting_feedback", round: 0,
+					focus: "manual review", initialRequest: "manual review",
+					contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
+					originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
+					loopStartedAt: Date.now(),
+				});
+				rememberAnchor(ctx);
+				blockInteractiveEditors();
+				startStatusTimer(ctx);
+				ctx.ui.notify("Opening plannotator...", "info");
+				const result = await openPlannotator(ctx);
+				if (!result || result.approved) {
+					ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
+					await stopLoop(ctx);
+					return;
+				}
+				if (result.feedback) {
+					await startManualInnerLoop(result.feedback, ctx);
+				}
+				return;
+			}
+
+			// Editor path: pick a single commit, review in $EDITOR
+			let commit: string;
 			let resolvedBase: string;
 
 			if (trimmedArgs) {
-				// Explicit range given
-				const result = resolveCommitRange(ctx, trimmedArgs);
-				if (!result) return;
-				commits = result.commits;
-				resolvedBase = result.base;
+				// Explicit SHA given
+				try {
+					commit = execSync(`git rev-parse ${trimmedArgs}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
+				} catch {
+					ctx.ui.notify(`Could not resolve: ${trimmedArgs}`, "error");
+					return;
+				}
 			} else {
-				// Interactive range picker
-				const result = await pickReviewTarget(ctx);
-				if (!result) return;
-				commits = result.commits;
-				resolvedBase = result.base;
+				const picked = await pickSingleCommit(ctx);
+				if (!picked) return;
+				commit = picked;
+			}
+
+			try {
+				resolvedBase = execSync(`git rev-parse ${commit}~1`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
+			} catch {
+				resolvedBase = commit;
 			}
 
 			loopCommandCtx = ctx;
 			state = newState({
-				mode: "manual",
-				phase: "awaiting_feedback",
-				round: 0,
-				focus: `manual review: ${commits.length} commit(s)`,
-				initialRequest: `manual review: ${commits.length} commit(s)`,
-				contextPaths: [],
-				maxRounds: cfg.maxRounds,
-				reviewMode: "incremental",
-				originalModelStr: modelToStr(ctx.model),
-				originalThinking: pi.getThinkingLevel(),
+				mode: "manual", phase: "awaiting_feedback", round: 0,
+				focus: `manual review: ${commit.slice(0, 7)}`,
+				initialRequest: `manual review: ${commit.slice(0, 7)}`,
+				contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
+				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
-				commitList: commits,
-				currentCommitIdx: 0,
-				patchIdMap: buildPatchIdMap(ctx.cwd, commits),
+				commitList: [commit], currentCommitIdx: 0,
+				patchIdMap: buildPatchIdMap(ctx.cwd, [commit]),
 				manualBase: resolvedBase,
 			});
 
@@ -710,66 +680,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	function resolveCommitRange(ctx: any, rangeArg: string): { commits: string[]; base: string } | null {
-		let range: string;
-		try {
-			range = resolveRange(ctx.cwd, rangeArg);
-		} catch (e: any) {
-			ctx.ui.notify(e.message || "Could not determine commit range", "error");
-			return null;
-		}
-		const commits = getCommitList(ctx.cwd, range);
-		if (commits.length === 0) { ctx.ui.notify("No commits found in range", "error"); return null; }
-		const basePart = range.split("..")[0];
-		let base: string;
-		try {
-			base = execSync(`git rev-parse ${basePart}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
-		} catch {
-			ctx.ui.notify("Could not resolve range base", "error");
-			return null;
-		}
-		return { commits, base };
-	}
 
-	async function pickReviewTarget(ctx: any): Promise<{ commits: string[]; base: string } | null> {
-		// Build branch option label
-		let branchLabel = "Branch";
-		try {
-			const range = resolveRange(ctx.cwd, "");
-			const count = getCommitList(ctx.cwd, range).length;
-			if (count > 0) branchLabel = `Branch (${count} commits)`;
-		} catch {}
-
-		const choice = await ctx.ui.select("What to review?", [
-			branchLabel,
-			"Pick a commit",
-			"Staged changes",
-			"Unstaged changes",
-		]);
-
-		if (!choice) return null;
-
-		if (choice.startsWith("Branch")) {
-			return resolveCommitRange(ctx, "");
-		}
-
-		if (choice === "Pick a commit") {
-			return await pickCommits(ctx);
-		}
-
-		if (choice === "Staged changes" || choice === "Unstaged changes") {
-			ctx.ui.notify("Staged/unstaged review coming soon", "info");
-			return null;
-		}
-
-		return null;
-	}
-
-	async function pickCommits(ctx: any): Promise<{ commits: string[]; base: string } | null> {
+	async function pickSingleCommit(ctx: any): Promise<string | null> {
 		let range: string;
 		try { range = resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
 
-		// Newest first for the picker
 		let branchShas: string[];
 		try {
 			branchShas = execSync(`git log --format=%H ${range}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
@@ -779,77 +694,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (branchShas.length === 0) { ctx.ui.notify("No commits on this branch", "error"); return null; }
 
-		const labels = branchShas.map(s => `${s.slice(0, 7)} ${getCommitSubject(ctx.cwd, s)}`);
-
-		// Custom picker: Enter = single commit, Space = mark range endpoint
-		type PickResult = { type: "single"; idx: number } | { type: "range"; from: number; to: number } | null;
-
-		const picked: PickResult = await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (r: PickResult) => void) => {
-			let cursor = 0;
-			let rangeStart: number | null = null;
-
-			return {
-				render(width: number): string[] {
-					const rows: string[] = [];
-					const title = rangeStart !== null ? "Select range end (Space/Enter to confirm)" : "Pick commit (Enter) or start range (Space)";
-					rows.push(theme.fg("accent", title));
-					rows.push("");
-					for (let i = 0; i < labels.length; i++) {
-						const isCursor = i === cursor;
-						const inRange = rangeStart !== null && i >= Math.min(rangeStart, cursor) && i <= Math.max(rangeStart, cursor);
-						const marker = rangeStart === i ? "+" : inRange ? "|" : " ";
-						const prefix = isCursor ? theme.fg("accent", ">") : " ";
-						const line = `${prefix} ${marker} ${labels[i]}`;
-						rows.push(inRange || isCursor ? theme.fg(isCursor ? "accent" : "text", line) : theme.fg("dim", line));
-					}
-					rows.push("");
-					rows.push(theme.fg("dim", " Esc cancel  j/k navigate  Enter select  Space mark range"));
-					return rows;
-				},
-				handleInput(data: string): void {
-					if (data === "\x1b" || data === "\x1b[" || data === "q") { done(null); return; }
-					if (data === "j" || data === "\x1b[B") { cursor = Math.min(cursor + 1, labels.length - 1); tui.requestRender(); return; }
-					if (data === "k" || data === "\x1b[A") { cursor = Math.max(cursor - 1, 0); tui.requestRender(); return; }
-					if (data === " ") {
-						if (rangeStart === null) { rangeStart = cursor; tui.requestRender(); return; }
-						// Second space = confirm range
-						const from = Math.min(rangeStart, cursor);
-						const to = Math.max(rangeStart, cursor);
-						done({ type: "range", from, to });
-						return;
-					}
-					if (data === "\r" || data === "\n") {
-						if (rangeStart !== null) {
-							const from = Math.min(rangeStart, cursor);
-							const to = Math.max(rangeStart, cursor);
-							done({ type: "range", from, to });
-						} else {
-							done({ type: "single", idx: cursor });
-						}
-						return;
-					}
-				},
-			};
-		}, { overlay: true, overlayOptions: { anchor: "center" as any, width: 80, minWidth: 40, maxHeight: "80%", margin: 1 } });
-
+		const items = branchShas.map(s => `${s.slice(0, 7)} ${getCommitSubject(ctx.cwd, s)}`);
+		const picked = await ctx.ui.select("Pick a commit to review", items);
 		if (!picked) return null;
-
-		let selectedShas: string[];
-		if (picked.type === "single") {
-			selectedShas = [branchShas[picked.idx]];
-		} else {
-			// newest-first in branchShas, reverse to chronological
-			selectedShas = branchShas.slice(picked.from, picked.to + 1).reverse();
-		}
-
-		let base: string;
-		const oldest = selectedShas[0];
-		try {
-			base = execSync(`git rev-parse ${oldest}~1`, { ...GIT_OPTS, cwd: ctx.cwd }).trim();
-		} catch {
-			base = oldest;
-		}
-		return { commits: selectedShas, base };
+		const idx = items.indexOf(picked);
+		return idx >= 0 ? branchShas[idx] : null;
 	}
 
 	pi.registerCommand("loop:resume", {
