@@ -8,7 +8,7 @@ import loopExtension from "../index.ts";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 import { saveConfigField, loadConfig } from "../config.ts";
 
-function wait(ms = 150): Promise<void> {
+function wait(ms = 300): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 

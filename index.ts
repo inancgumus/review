@@ -509,9 +509,9 @@ export default function (pi: ExtensionAPI) {
 		if (verdict === "changes_requested") {
 			recordOverseer(state.round, "changes_requested", text);
 			const summary = sanitize(stripVerdict(text));
-			if (state.mode !== "manual") log(`❌ CHANGES REQUESTED\n${summary}`);
 			if (state.mode === "manual") state.round++;
 			deferIf("reviewing", () => {
+				if (state.mode !== "manual") log(`❌ CHANGES REQUESTED\n${summary}`);
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
 				void continueLoop(ctx, { type: "workhorse", overseerText: text });
 			});
