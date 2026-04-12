@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { createHash } from "node:crypto";
-import { sanitize } from "./session.js";
+/** Strip C0/C1/DEL/zero-width/line separator chars. */
+function sanitize(text: string): string {
+	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
+}
 import type { LoopMode, PromptSet, OverseerPromptParams } from "./types.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, CHANGES_STRIP_RE } from "./verdicts.js";
 
