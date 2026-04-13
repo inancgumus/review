@@ -21,8 +21,12 @@ interface ManualEngine {
 	stopLoop(ctx: any): Promise<void>;
 	/** Reset inner-round state and kick off the workhorse. */
 	beginInnerRound(feedback: string, ctx: any): Promise<void>;
-	/** Drive commit-review loop: cycles through commits, calls reviewFn, stops or starts inner round. */
-	reviewNextCommit(reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string }, ctx: any, originalEditor?: string): Promise<void>;
+	/** Get current commit info for the review loop. */
+	getCommitInfo(): { sha: string | undefined; index: number; total: number };
+	/** Advance to next commit. Returns false if already at the last one. */
+	advanceCommit(): boolean;
+	/** Set the engine phase (e.g. to awaiting_feedback). */
+	setPhase(phase: "awaiting_feedback"): void;
 }
 
 interface SessionInit {
@@ -94,9 +98,29 @@ export function createManualMode(engine: ManualEngine) {
 
 	// ── Commit review UI ────────────────────────────
 
-	async function showCommitForReview(ctx: any): Promise<void> {
+	/** Drive the commit-review loop: iterate commits, call reviewFn, stop or start inner round. */
+	async function reviewCommitLoop(ctx: any): Promise<void> {
 		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
-		await engine.reviewNextCommit(reviewFn, ctx, originalEditor);
+
+		while (true) {
+			engine.setPhase("awaiting_feedback");
+			const info = engine.getCommitInfo();
+			if (!info.sha) { await engine.stopLoop(ctx); return; }
+
+			const result = reviewFn(info.sha, ctx.cwd, originalEditor);
+
+			if (result.approved) {
+				if (!engine.advanceCommit()) {
+					ctx.ui.notify(`All ${info.total} commit(s) approved`, "success");
+					await engine.stopLoop(ctx);
+					return;
+				}
+				continue;
+			}
+
+			await engine.beginInnerRound(result.feedback, ctx);
+			return;
+		}
 	}
 
 	async function afterInnerLoop(ctx: any): Promise<void> {
@@ -199,7 +223,7 @@ export function createManualMode(engine: ManualEngine) {
 		if (!result) return; // already running
 		originalEditor = result.originalEditor;
 
-		await showCommitForReview(ctx);
+		await reviewCommitLoop(ctx);
 	}
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
@@ -232,7 +256,7 @@ export function createManualMode(engine: ManualEngine) {
 			if (!result) return;
 			originalEditor = result.originalEditor;
 			ctx.ui.notify(`Resuming manual review — commit ${result.commitIndex + 1}/${commits.length}`, "info");
-			await showCommitForReview(ctx);
+			await reviewCommitLoop(ctx);
 			return;
 		}
 

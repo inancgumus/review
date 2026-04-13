@@ -559,40 +559,22 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		await startWorkhorse(overseerText, ctx);
 	}
 
-	/** Drive the commit-review loop: cycles through commits, calls reviewFn per commit, stops or starts inner round. */
-	async function reviewNextCommit(
-		reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string },
-		ctx: any,
-		originalEditor?: string,
-	): Promise<void> {
-		while (true) {
-			state.phase = "awaiting_feedback";
-			const sha = state.commitList[state.currentCommitIdx];
-			if (!sha) { await stopLoop(ctx); return; }
-
-			const result = reviewFn(sha, ctx.cwd, originalEditor);
-
-			if (result.approved) {
-				if (state.currentCommitIdx >= state.commitList.length - 1) {
-					ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-					await stopLoop(ctx);
-					return;
-				}
-				state.currentCommitIdx++;
-				continue;
-			}
-
-			await beginInnerRound(result.feedback, ctx);
-			return;
-		}
-	}
-
 	const manual = createManualMode({
 		pi,
 		initSession: initManualSession,
 		stopLoop,
 		beginInnerRound,
-		reviewNextCommit,
+		getCommitInfo: () => ({
+			sha: state.commitList[state.currentCommitIdx],
+			index: state.currentCommitIdx,
+			total: state.commitList.length,
+		}),
+		advanceCommit: () => {
+			if (state.currentCommitIdx >= state.commitList.length - 1) return false;
+			state.currentCommitIdx++;
+			return true;
+		},
+		setPhase: (phase) => { state.phase = phase; },
 	});
 
 	// ── Transitions ─────────────────────────────────────
