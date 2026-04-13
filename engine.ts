@@ -11,7 +11,7 @@ import { parseArgs } from "./context.js";
 import { promptSets, snapshotContextHashes, changedContextPaths as findChangedContextPaths } from "./prompts.js";
 import { matchVerdict, hasFixesComplete, stripVerdict, V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { git } from "./git.js";
-import { reviewCommitInEditor } from "./diff-review.js";
+import { createManualMode } from "./manual.js";
 import { execSync } from "node:child_process";
 
 // ── Session helpers (absorbed from session.ts) ──────────
@@ -181,7 +181,7 @@ export interface Engine {
 	onAgentEnd(event: any, ctx: any): void;
 	state: LoopState;
 	startManual(args: string, ctx: any): Promise<void>;
-	seedDemoRounds(): void;
+	seedDebugRound(round: number, overseerText: string, verdict: Verdict, workhorseSummary: string, startedAt: number, endedAt: number, workhorseStartedAt: number): void;
 }
 
 export function createEngine(pi: ExtensionAPI): Engine {
@@ -294,38 +294,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		return true;
 	}
 
-	// ── Plannotator integration ───────────────────────
-
-	function detectPlannotator(cwd?: string): boolean {
-		const cfg = loadConfig(cwd || loopCommandCtx?.cwd || "");
-		if (!cfg.plannotator) { state.hasPlannotator = false; return false; }
-		if (state.hasPlannotator !== null) return state.hasPlannotator;
-		if (!pi.events?.emit) { state.hasPlannotator = false; return false; }
-		let responded = false;
-		pi.events.emit("plannotator:request", {
-			requestId: `detect-${Date.now()}`,
-			action: "review-status",
-			payload: { reviewId: "__loop_detect__" },
-			respond: () => { responded = true; },
-		});
-		state.hasPlannotator = responded;
-		return responded;
-	}
-
-	async function openPlannotator(ctx: any): Promise<{ approved: boolean; feedback?: string } | null> {
-		return new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
-			pi.events.emit("plannotator:request", {
-				requestId: `loop-review-${Date.now()}`,
-				action: "code-review",
-				payload: { diffType: "branch", cwd: ctx.cwd },
-				respond: (response: any) => {
-					if (response?.status === "handled" && response.result) resolve(response.result);
-					else resolve(null);
-				},
-			});
-		});
-	}
-
 	// ── Time tracking ───────────────────────────
 
 	function pauseTimer(): void {
@@ -339,80 +307,20 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Commit review UI ───────────────────────
+	// ── Manual mode ─────────────────────────────
 
-	function recoverGitState(ctx: any): boolean {
-		const gitIssue = git.checkGitState(ctx.cwd);
-		if (!gitIssue) return true;
-		const fixed = git.fixGitState(ctx.cwd, gitIssue);
-		if (fixed) return true;
-		if (gitIssue.type === "dirty_tree") return true;
-		ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually, then /loop:resume`, "error");
-		return false;
-	}
-
-	async function advanceCommit(ctx: any): Promise<boolean> {
-		if (state.currentCommitIdx >= state.commitList.length - 1) {
-			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-			await stopLoop(ctx);
-			return false;
-		}
-		state.currentCommitIdx++;
-		return true;
-	}
-
-	// Overridable for testing via pi.events
-	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
-	if (pi.events?.on) {
-		pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
-	}
-
-	async function showCommitForReview(ctx: any): Promise<void> {
-		if (!recoverGitState(ctx)) { await stopLoop(ctx); return; }
-
-		while (true) {
-			state.phase = "awaiting_feedback";
-			const sha = state.commitList[state.currentCommitIdx];
-			if (!sha) { await stopLoop(ctx); return; }
-			const shortSha = sha.slice(0, 7);
-			const subject = git.getCommitSubject(ctx.cwd, sha);
-			statusPrefix = `Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
-			updateStatus(ctx);
-
-			const origEditor = savedEnv.EDITOR || savedEnv.VISUAL || process.env.EDITOR || process.env.VISUAL;
-			const result = reviewFn(sha, ctx.cwd, origEditor);
-
-			if (result.approved) {
-				if (!await advanceCommit(ctx)) return;
-				continue;
-			}
-
-			await startManualInnerLoop(result.feedback, ctx);
-			return;
-		}
-	}
-
-	async function startManualInnerLoop(feedback: string, ctx: any): Promise<void> {
-		resumeTimer();
-		state.userFeedback = feedback;
-		state.round = 1;
-		state.manualInnerRound = 0;
-		state.workhorseSummaries = [];
-		state.overseerLeafId = null;
-		state.roundStartedAt = Date.now();
-
-		const sha = state.commitList[state.currentCommitIdx];
-		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
-
-		if (!await navigateToAnchor(ctx)) return;
-		await startWorkhorse(overseerText, ctx);
-	}
-
-	async function afterManualInnerLoop(ctx: any): Promise<void> {
-		if (state.phase === "idle") return;
-		const useCtx = loopCommandCtx || ctx;
-		await stopLoop(useCtx);
-	}
+	const manual = createManualMode({
+		pi,
+		getState: () => state,
+		setState: (s) => { state = s; },
+		getLoopCommandCtx: () => loopCommandCtx,
+		setLoopCommandCtx: (ctx) => { loopCommandCtx = ctx; },
+		setStatusPrefix: (s) => { statusPrefix = s; },
+		getSavedEditorEnv: () => savedEnv,
+		stopLoop, navigateToAnchor, startWorkhorse, updateStatus,
+		startStatusTimer, rememberAnchor, blockInteractiveEditors,
+		log, pauseTimer, resumeTimer, modelToStr,
+	});
 
 	// ── Transitions ─────────────────────────────────────
 
@@ -580,7 +488,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 			if (state.mode === "manual") {
 				pauseTimer();
-				deferIf("reviewing", () => void afterManualInnerLoop(ctx));
+				deferIf("reviewing", () => void manual.afterInnerLoop(ctx));
 				return;
 			}
 
@@ -681,7 +589,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			blockInteractiveEditors();
 			startStatusTimer(ctx);
 			ctx.ui.notify(`Resuming manual review — commit ${state.currentCommitIdx + 1}/${commits.length}`, "info");
-			await showCommitForReview(ctx);
+			await manual.showCommitForReview(ctx);
 			return;
 		}
 
@@ -708,66 +616,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		else await startOverseer(ctx);
 	}
 
-	async function startManual(args: string, ctx: any): Promise<void> {
-		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
-		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
-		const cfg = loadConfig(ctx.cwd);
-		const trimmedArgs = (args || "").trim();
-
-		// Plannotator: delegate everything (commit selection, diff, annotation)
-		if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
-			initManual({
-				mode: "manual", phase: "awaiting_feedback", round: 0,
-				focus: "manual review", initialRequest: "manual review",
-				contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
-				originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
-				loopStartedAt: Date.now(),
-			}, ctx);
-			ctx.ui.notify("Opening plannotator...", "info");
-			const result = await openPlannotator(ctx);
-			if (!result || result.approved) {
-				ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
-				await stopLoop(ctx);
-				return;
-			}
-			if (result.feedback) {
-				await startManualInnerLoop(result.feedback, ctx);
-			}
-			return;
-		}
-
-		// Editor path: pick a single commit, review in $EDITOR
-		let commit: string;
-		let resolvedBase: string;
-
-		if (trimmedArgs) {
-			const resolved = resolveCommit(trimmedArgs, ctx.cwd);
-			if (!resolved) { ctx.ui.notify(`Could not resolve: ${trimmedArgs}`, "error"); return; }
-			commit = resolved.commit;
-			resolvedBase = resolved.base;
-		} else {
-			const picked = await pickSingleCommit(ctx);
-			if (!picked) return;
-			const resolved = resolveCommit(picked, ctx.cwd);
-			if (!resolved) { ctx.ui.notify(`Could not resolve: ${picked}`, "error"); return; }
-			commit = resolved.commit;
-			resolvedBase = resolved.base;
-		}
-
-		initManual({
-			mode: "manual", phase: "awaiting_feedback", round: 0,
-			focus: `manual review: ${commit.slice(0, 7)}`,
-			initialRequest: `manual review: ${commit.slice(0, 7)}`,
-			contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
-			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
-			loopStartedAt: Date.now(),
-			commitList: [commit], currentCommitIdx: 0,
-			manualBase: resolvedBase,
-		}, ctx, { pauseTimer: true });
-
-		await showCommitForReview(ctx);
-	}
-
 	function onAgentEnd(_event: any, ctx: any): void {
 		if (state.phase === "idle") return;
 		const { text, stopReason } = getLastAssistant(ctx);
@@ -781,16 +629,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Manual mode init helpers ────────────────────────
-
-	function initManual(overrides: Partial<LoopState>, ctx: any, opts?: { pauseTimer?: boolean }): void {
-		loopCommandCtx = ctx;
-		state = newState(overrides);
-		rememberAnchor(ctx);
-		blockInteractiveEditors();
-		if (opts?.pauseTimer) pauseTimer();
-		startStatusTimer(ctx);
-	}
+	// ── Seed demo rounds for /loop:debug ────────────────
 
 	function seedDebugRound(round: number, overseerText: string, verdict: Verdict, workhorseSummary: string, startedAt: number, endedAt: number, workhorseStartedAt: number): void {
 		state.round++;
@@ -807,152 +646,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	function seedDemoRounds(): void {
-		const rounds = [
-			{
-				overseer: [
-					"## Critical Issues", "", "### 1. Race condition in `handleConn()`", "",
-					"The `connMap` is accessed without a mutex. Multiple goroutines write to it",
-					"concurrently when connections spike. I traced this through the call chain:", "",
-					"```go", "// server.go:45 — spawns a goroutine per connection", "go func() {",
-					"    connMap[conn.RemoteAddr()] = conn  // unsynchronized write", "    handleConn(conn)",
-					"}()", "```", "", "Under load testing with 500 concurrent connections, this triggers",
-					"`fatal error: concurrent map writes` roughly 1 in 3 runs.", "",
-					"### 2. Error swallowed silently", "", "On line 87:", "```go",
-					"resp, _ := client.Do(req)", "```", "",
-					"This hides network failures from callers. When the upstream service is down,",
-					"the handler silently returns a nil response, causing a nil pointer dereference",
-					"three lines later at `resp.StatusCode`.", "", "### 3. Missing context propagation", "",
-					"`handleConn` creates `context.Background()` instead of using the parent",
-					"context from the server. This means:",
-					"- Server shutdown won't cancel in-flight handlers",
-					"- Client disconnects won't propagate",
-					"- Timeout enforcement at the server level is bypassed", "",
-					"### 4. Missing `defer conn.Close()`", "",
-					"The connection is only closed in the happy path (line 102). If any of the",
-					"intermediate steps return an error, the connection leaks. Under sustained",
-					"load this will exhaust file descriptors.", "", `${V_CHANGES}`,
-				].join("\n"),
-				workhorse: [
-					"Added sync.RWMutex around connMap access — write lock only for",
-					"map insertion, read lock for lookups.", "",
-					"Propagated error from client.Do with wrapped context:", "```go",
-					"resp, err := client.Do(req)", "if err != nil {",
-					'    return fmt.Errorf("handleConn: upstream request: %w", err)', "}", "```", "",
-					"Threaded parent context through handleConn. Added defer conn.Close().", "",
-					"New tests:",
-					"- `TestHandleConnConcurrent` — 500 goroutines, race detector enabled",
-					"- `TestHandleConnContextCancel` — verifies handler exits on parent cancel",
-					"- `TestHandleConnUpstreamError` — verifies error propagation",
-					"- `TestHandleConnLeak` — verifies conn.Close on all exit paths",
-				].join("\n"),
-			},
-			{
-				overseer: [
-					"## Improvements needed", "", "Good progress. The race condition fix and error handling are solid.",
-					"Two remaining issues:", "", "### Lock granularity is too coarse", "",
-					"You're holding the write lock for the entire `handleConn` duration.",
-					"This effectively serializes all connections — defeating the purpose of",
-					"the goroutine-per-connection model.", "", "Current code:", "```go", "mu.Lock()",
-					"connMap[addr] = conn", "handleConnInner(ctx, conn)  // entire handler under lock!",
-					"delete(connMap, addr)", "mu.Unlock()", "```", "", "Should be:", "```go",
-					"mu.Lock()", "connMap[addr] = conn", "mu.Unlock()", "",
-					"handleConnInner(ctx, conn)  // no lock held", "", "mu.Lock()",
-					"delete(connMap, addr)", "mu.Unlock()", "```", "",
-					"Use `RLock` for read-only access in the health check endpoint.", "",
-					"### Deprecated error wrapping", "",
-					"You're using `errors.Wrap` from `pkg/errors` which is unmaintained.",
-					"Switch to stdlib:", "```go", "// before", 'errors.Wrap(err, "handleConn")',
-					"// after", 'fmt.Errorf("handleConn: %w", err)', "```", "",
-					"Tests look solid — the race detector test is a nice touch.", "", `${V_CHANGES}`,
-				].join("\n"),
-				workhorse: [
-					"Narrowed lock scope:",
-					"- Lock only for map insertion and deletion",
-					"- RLock for the health check endpoint's connection count",
-					"- Handler runs entirely outside the critical section", "",
-					"Switched all error wrapping to fmt.Errorf with %w.",
-					"Removed pkg/errors dependency entirely.", "",
-					"Benchmarked with `go test -bench=BenchmarkConcurrentConns -count=5`:",
-					"- Before: 3,200 conns/sec (serialized by lock)",
-					"- After: 10,400 conns/sec (3.2x improvement)",
-					"- p99 latency: 12ms → 3ms",
-				].join("\n"),
-			},
-			{
-				overseer: [
-					"## Final review", "", "All issues from rounds 1 and 2 are resolved:", "",
-					"- [x] Race condition fixed with properly scoped mutex",
-					"- [x] Error propagation using stdlib fmt.Errorf",
-					"- [x] Context propagation from server to handler",
-					"- [x] Connection leak fixed with defer",
-					"- [x] Lock granularity narrowed — handler outside critical section",
-					"- [x] pkg/errors dependency removed", "",
-					"The benchmark numbers confirm the lock contention was real —",
-					"3.2x throughput improvement and 4x latency reduction.", "",
-					"Test coverage is comprehensive:",
-					"- Concurrent access with race detector",
-					"- Context cancellation propagation",
-					"- Upstream error handling",
-					"- Connection lifecycle (no leaks)", "", "Clean code, good tests. Ship it.", "",
-					`${V_APPROVED}`,
-				].join("\n"),
-				workhorse: "",
-			},
-		];
-
-		const now = Date.now();
-		const roundDurations = [18 * 60000, 12 * 60000, 7 * 60000];
-		let elapsed = 0;
-		for (const d of roundDurations) elapsed += d;
-		state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go", loopStartedAt: now - elapsed });
-		let cursor = now - elapsed;
-		for (let i = 0; i < rounds.length; i++) {
-			const r = rounds[i];
-			const verdict = matchVerdict(r.overseer);
-			const workhorseStartedAt = cursor + Math.floor(roundDurations[i] * 0.4);
-			const endedAt = cursor + roundDurations[i];
-			seedDebugRound(i + 1, r.overseer, verdict, r.workhorse, cursor, endedAt, workhorseStartedAt);
-			cursor += roundDurations[i];
-		}
-	}
-
-	function resolveCommit(sha: string, cwd: string): { commit: string; base: string } | null {
-		let commit: string;
-		try {
-			commit = execSync(`git rev-parse ${sha}`, { ...GIT_OPTS, cwd }).trim();
-		} catch {
-			return null;
-		}
-		let base: string;
-		try {
-			base = execSync(`git rev-parse ${commit}~1`, { ...GIT_OPTS, cwd }).trim();
-		} catch {
-			base = commit;
-		}
-		return { commit, base };
-	}
-
-	async function pickSingleCommit(ctx: any): Promise<string | null> {
-		let range: string;
-		try { range = git.resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
-
-		let branchShas: string[];
-		try {
-			branchShas = execSync(`git log --format=%H ${range}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
-		} catch {
-			ctx.ui.notify("Could not list commits", "error");
-			return null;
-		}
-		if (branchShas.length === 0) { ctx.ui.notify("No commits on this branch", "error"); return null; }
-
-		const items = branchShas.map(s => `${s.slice(0, 7)} ${git.getCommitSubject(ctx.cwd, s)}`);
-		const picked = await ctx.ui.select("Pick a commit to review", items);
-		if (!picked) return null;
-		const idx = items.indexOf(picked);
-		return idx >= 0 ? branchShas[idx] : null;
-	}
-
 	return {
 		get state() { return state; },
 		set state(s: LoopState) { state = s; },
@@ -960,7 +653,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		stop: stopLoop,
 		resume: resumeLoop,
 		onAgentEnd,
-		startManual,
-		seedDemoRounds,
+		startManual: manual.start,
+		seedDebugRound,
 	};
 }

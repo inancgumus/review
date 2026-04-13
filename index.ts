@@ -16,6 +16,8 @@ import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
 import { createEngine } from "./engine.js";
 import { showLog } from "./log-view.js";
+import { matchVerdict, V_APPROVED, V_CHANGES } from "./verdicts.js";
+import { newState } from "./types.js";
 
 export default function (pi: ExtensionAPI) {
 	const engine = createEngine(pi);
@@ -86,7 +88,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("loop:debug", {
 		description: "Simulate a 3-round review loop and open the log viewer",
 		handler: async (_args, ctx) => {
-			engine.seedDemoRounds();
+			seedDemoRounds(engine);
 			await showLog(engine.state.initialRequest, engine.state.roundResults, ctx, engine.state.loopStartedAt);
 		},
 	});
@@ -161,5 +163,39 @@ export default function (pi: ExtensionAPI) {
 		if (!picked) return;
 		const mode = picked.split(/\s/)[0] as ReviewMode;
 		if (mode !== current) { saveConfigField("reviewMode", mode); ctx.ui.notify(`Loop mode → ${mode}`, "success"); }
+	}
+}
+
+// ── Demo data for /loop:debug ───────────────────────────
+
+import type { Engine } from "./engine.js";
+
+function seedDemoRounds(engine: Engine): void {
+	const rounds = [
+		{
+			overseer: "## Critical Issues\n\n### 1. Race condition in `handleConn()`\n\nThe `connMap` is accessed without a mutex. Multiple goroutines write to it\nconcurrently when connections spike.\n\n```go\ngo func() {\n    connMap[conn.RemoteAddr()] = conn  // unsynchronized write\n    handleConn(conn)\n}()\n```\n\nUnder load testing with 500 concurrent connections, this triggers\n`fatal error: concurrent map writes` roughly 1 in 3 runs.\n\n### 2. Error swallowed silently\n\nOn line 87:\n```go\nresp, _ := client.Do(req)\n```\n\nThis hides network failures. The handler returns nil, causing a nil pointer dereference at `resp.StatusCode`.\n\n### 3. Missing context propagation\n\n`handleConn` creates `context.Background()` instead of using the parent context.\n\n### 4. Missing `defer conn.Close()`\n\nThe connection leaks on error paths.\n\n" + V_CHANGES,
+			workhorse: "Added sync.RWMutex around connMap access. Propagated error from client.Do. Threaded parent context through handleConn. Added defer conn.Close().\n\nNew tests: TestHandleConnConcurrent, TestHandleConnContextCancel, TestHandleConnUpstreamError, TestHandleConnLeak.",
+		},
+		{
+			overseer: "## Improvements needed\n\nGood progress. Two remaining issues:\n\n### Lock granularity is too coarse\n\nYou're holding the write lock for the entire `handleConn` duration. This serializes all connections.\n\n### Deprecated error wrapping\n\nUsing `errors.Wrap` from `pkg/errors` which is unmaintained. Switch to `fmt.Errorf`.\n\n" + V_CHANGES,
+			workhorse: "Narrowed lock scope. RLock for health check. Switched to fmt.Errorf with %w. Removed pkg/errors.\n\nBenchmark: 3,200 → 10,400 conns/sec (3.2x improvement), p99 latency 12ms → 3ms.",
+		},
+		{
+			overseer: "## Final review\n\nAll issues resolved. Clean code, good tests. Ship it.\n\n" + V_APPROVED,
+			workhorse: "",
+		},
+	];
+
+	const now = Date.now();
+	const durations = [18 * 60000, 12 * 60000, 7 * 60000];
+	let elapsed = 0;
+	for (const d of durations) elapsed += d;
+	engine.state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go", loopStartedAt: now - elapsed });
+	let cursor = now - elapsed;
+	for (let i = 0; i < rounds.length; i++) {
+		const r = rounds[i];
+		const verdict = matchVerdict(r.overseer);
+		engine.seedDebugRound(i + 1, r.overseer, verdict, r.workhorse, cursor, cursor + durations[i], cursor + Math.floor(durations[i] * 0.4));
+		cursor += durations[i];
 	}
 }
