@@ -500,61 +500,74 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
+	// ── Manual mode (6 high-level methods, no primitives) ──
+
 	const manual = createManualMode({
 		pi,
-		isIdle: () => state.phase === "idle",
-		initState: (init: {
-			mode: LoopMode; focus: string; initialRequest: string;
-			contextPaths: string[]; maxRounds: number;
-			commits?: string[]; startIdx?: number;
-			anchor?: string;
-		}, ctx: any) => {
+		initSession(cfg, onInnerLoopDone, ctx) {
+			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
 			loopCommandCtx = ctx;
 			state = newState({
-				mode: init.mode,
+				mode: "manual",
 				phase: "awaiting_feedback",
 				round: 0,
 				reviewMode: "incremental",
-				focus: init.focus,
-				initialRequest: init.initialRequest,
-				contextPaths: init.contextPaths,
-				maxRounds: init.maxRounds,
-				commitList: init.commits ?? [],
-				currentCommitIdx: init.startIdx ?? 0,
-				anchorEntryId: init.anchor ?? null,
+				focus: cfg.focus,
+				initialRequest: cfg.initialRequest,
+				contextPaths: cfg.contextPaths,
+				maxRounds: cfg.maxRounds,
+				commitList: cfg.commits,
+				currentCommitIdx: cfg.startIdx,
+				anchorEntryId: cfg.anchor ?? null,
 				originalModelStr: modelToStr(ctx.model),
 				originalThinking: pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
 			});
 			rememberAnchor(ctx);
 			blockInteractiveEditors();
+			if (cfg.pauseTimer) pauseTimer();
 			startStatusTimer(ctx);
+			modeHooks = {
+				onApproved: (innerCtx: any) => { pauseTimer(); onInnerLoopDone(innerCtx); },
+				onChangesRequested: () => { state.round++; },
+				suppressRoundIncrement: true,
+				suppressLogs: true,
+			};
+			return true;
 		},
-		setModeHooks: (hooks: ModeHooks) => { modeHooks = hooks; },
-		stopLoop,
-		navigateToAnchor,
-		startWorkhorse,
-		updateStatus,
-		setPhase: (p: LoopState["phase"]) => { state.phase = p; },
-		setStatusPrefix: (s: string) => { statusPrefix = s; },
-		getSavedEditor: () => savedEnv.EDITOR || savedEnv.VISUAL,
-		pauseTimer,
-		resumeTimer,
-		modelToStr,
-		// Commit list access — engine owns the fields, manual reads/writes through these
-		getCommit: () => state.commitList[state.currentCommitIdx],
-		getCommitProgress: () => ({ idx: state.currentCommitIdx, total: state.commitList.length }),
-		advanceCursor: () => { state.currentCommitIdx++; },
-		// Round state — engine owns, manual resets for inner loops
-		resetRound: (feedback: string) => {
+		beginInnerRound(feedback, commitSha, ctx) {
 			state.userFeedback = feedback;
 			state.round = 1;
 			state.workhorseSummaries = [];
 			state.overseerLeafId = null;
 			state.roundStartedAt = Date.now();
+			resumeTimer();
+			const text = commitSha ? `[COMMIT:${commitSha}]\n${feedback}` : feedback;
+			return (async () => {
+				if (!await navigateToAnchor(ctx)) return;
+				await startWorkhorse(text, ctx);
+			})();
 		},
-		getLoopCommandCtx: () => loopCommandCtx,
-		incrementRound: () => { state.round++; },
+		prepareForReview(ctx) {
+			state.phase = "awaiting_feedback";
+			const sha = state.commitList[state.currentCommitIdx];
+			if (sha) {
+				const subject = git.getCommitSubject(ctx.cwd, sha);
+				statusPrefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
+				updateStatus(ctx);
+			}
+			return { sha, savedEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+		},
+		advanceCommit(ctx) {
+			if (state.currentCommitIdx >= state.commitList.length - 1) {
+				ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+				return false;
+			}
+			state.currentCommitIdx++;
+			return true;
+		},
+		stop: stopLoop,
+		getCommandCtx: () => loopCommandCtx,
 	});
 
 	// ── Transitions ─────────────────────────────────────
