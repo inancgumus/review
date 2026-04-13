@@ -497,6 +497,7 @@ test("manual overseer round 2 is shorter re-verify prompt", async () => {
 
 		// Overseer round 1 prompt
 		const overseer1 = h.userMessages[h.userMessages.length - 1];
+		assert.match(overseer1, /fix error handling/, "round 1 includes user feedback text");
 
 		// Overseer says CHANGES_REQUESTED
 		h.pushAssistant(`Still broken.\n\n${V_CHANGES}`);
@@ -790,6 +791,78 @@ test("single tagged SHA skips unchanged detection — no snapshot", async () => 
 		await h.stopLoop();
 	} finally {
 		setLoopSetting("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+// ── Group 7: Plannotator path (empty commitList) ────────
+
+test("plannotator path: workhorse prompt does not contain COMMIT:undefined", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+
+		// Mock plannotator: respond to detection and return feedback on code-review
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				req.respond({ status: "handled", result: { approved: false, feedback: "fix the auth bug" } });
+			}
+		});
+
+		// Start manual mode with no args — triggers plannotator path
+		await h.commands.get("loop:manual")!("", h.ctx);
+
+		// Workhorse prompt should have been sent (plannotator returned feedback)
+		assert.ok(h.userMessages.length >= 1, "workhorse prompt sent");
+		const workhorse1 = h.userMessages[0];
+		assert.doesNotMatch(workhorse1, /commit undefined/i, "no 'commit undefined' in workhorse prompt");
+		assert.doesNotMatch(workhorse1, /git show undefined/, "no 'git show undefined' in workhorse prompt");
+		assert.match(workhorse1, /fix the auth bug/, "includes plannotator feedback");
+		assert.match(workhorse1, /referenced in the feedback above/, "uses fallback generic rules");
+		assert.ok(workhorse1.includes(V_FIXES_COMPLETE), "has FIXES_COMPLETE");
+		await h.stopLoop();
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("plannotator path round 2: workhorse uses fallback when no COMMIT prefix", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				req.respond({ status: "handled", result: { approved: false, feedback: "fix the auth bug" } });
+			}
+		});
+
+		await h.commands.get("loop:manual")!("", h.ctx);
+
+		// Round 1: workhorse completes
+		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		// Round 1: overseer says CHANGES_REQUESTED
+		h.pushAssistant(`Still broken.\n\n${V_CHANGES}`);
+		await h.fireAgentEnd();
+
+		// Round 2 workhorse prompt — commitList is empty, no COMMIT prefix
+		const workhorse2 = h.userMessages[h.userMessages.length - 1];
+		assert.doesNotMatch(workhorse2, /commit undefined/i, "no 'commit undefined' in round 2");
+		assert.doesNotMatch(workhorse2, /git show undefined/, "no 'git show undefined' in round 2");
+		assert.match(workhorse2, /referenced in the feedback above/, "uses fallback generic rules");
+		assert.ok(workhorse2.includes(V_FIXES_COMPLETE), "has FIXES_COMPLETE");
+		await h.stopLoop();
+	} finally {
 		repo.cleanup();
 	}
 });

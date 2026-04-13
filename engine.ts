@@ -402,7 +402,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		state.roundStartedAt = Date.now();
 
 		const sha = state.commitList[state.currentCommitIdx];
-		const overseerText = `[COMMIT:${sha}]\n${feedback}`;
+		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
 
 		if (!await navigateToAnchor(ctx)) return;
 		await startWorkhorse(overseerText, ctx);
