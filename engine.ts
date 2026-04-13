@@ -30,7 +30,7 @@ interface ModeHooks {
 
 // ── Loop state (engine-owned) ───────────────────────
 
-export interface LoopState {
+interface LoopState {
 	mode: LoopMode;
 	phase: "idle" | "reviewing" | "fixing" | "awaiting_feedback";
 	round: number;
@@ -363,9 +363,15 @@ export interface Engine {
 	stop(ctx: any): Promise<void>;
 	resume(ctx: any): Promise<void>;
 	onAgentEnd(event: any, ctx: any): void;
-	readonly state: LoopState;
+	readonly state: {
+		readonly phase: "idle" | "reviewing" | "fixing" | "awaiting_feedback";
+		maxRounds: number;
+		readonly round: number;
+		readonly roundResults: RoundResult[];
+		readonly initialRequest: string;
+		readonly loopStartedAt: number;
+	};
 	startManual(args: string, ctx: any): Promise<void>;
-	resetState(overrides?: Partial<LoopState>): void;
 }
 
 export function createEngine(pi: ExtensionAPI): Engine {
@@ -494,48 +500,87 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Manual mode ─────────────────────────────
+	// ── Manual mode (semantic API — manual.ts never sees LoopState) ────
 
-	/** Generic session init — sets state, ctx, anchor, editors, timers, hooks. */
-	function initLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
-		pauseTimer?: boolean;
-		hooks?: {
-			onApproved?(ctx: any): void;
-			onChangesRequested?(text: string, ctx: any): void;
-			suppressRoundIncrement?: boolean;
-			suppressLogs?: boolean;
-		};
-	}): boolean {
+	function initManualSession(init: import("./manual.js").ManualSessionInit, ctx: any): boolean {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
 		loopCommandCtx = ctx;
-		state = newState(overrides);
+		state = newState({
+			mode: "manual",
+			phase: "awaiting_feedback",
+			round: 0,
+			reviewMode: "incremental",
+			focus: init.focus,
+			initialRequest: init.initialRequest,
+			contextPaths: init.contextPaths,
+			maxRounds: init.maxRounds,
+			loopStartedAt: init.loopStartedAt,
+			commitList: init.commitList,
+			currentCommitIdx: init.currentCommitIdx,
+			anchorEntryId: init.anchorEntryId,
+			originalModelStr: modelToStr(ctx.model),
+			originalThinking: pi.getThinkingLevel(),
+		});
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
-		if (opts?.pauseTimer) pauseTimer();
+		if (init.pauseTimer) pauseTimer();
 		startStatusTimer(ctx);
-		if (opts?.hooks) {
-			modeHooks = {
-				onApproved: opts.hooks.onApproved,
-				onChangesRequested: opts.hooks.onChangesRequested,
-				suppressRoundIncrement: opts.hooks.suppressRoundIncrement,
-				suppressLogs: opts.hooks.suppressLogs,
-			};
+		modeHooks = {
+			onApproved(innerCtx: any) { pauseTimer(); init.onApproved(innerCtx); },
+			onChangesRequested() { state.round++; },
+			suppressRoundIncrement: true,
+			suppressLogs: true,
+		};
+		return true;
+	}
+
+	function beginInnerRound(feedback: string, ctx: any): Promise<void> {
+		resumeTimer();
+		state.userFeedback = feedback;
+		state.round = 1;
+		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
+		state.roundStartedAt = Date.now();
+
+		// COMMIT prefix — single authoritative location
+		const sha = state.commitList[state.currentCommitIdx];
+		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
+
+		return (async () => {
+			if (!await navigateToAnchor(ctx)) return;
+			await startWorkhorse(overseerText, ctx);
+		})();
+	}
+
+	function prepareForReview(): { sha: string | undefined; idx: number; total: number; savedEditor: string | undefined } {
+		state.phase = "awaiting_feedback";
+		const idx = state.currentCommitIdx;
+		const total = state.commitList.length;
+		const sha = state.commitList[idx];
+		if (sha) {
+			statusPrefix = `Manual: ${sha.slice(0, 7)} (${idx + 1}/${total})`;
+			updateStatus(loopCommandCtx);
 		}
+		return { sha, idx, total, savedEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+	}
+
+	function advanceCommit(ctx: any): boolean {
+		if (state.currentCommitIdx >= state.commitList.length - 1) {
+			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+			void stopLoop(ctx);
+			return false;
+		}
+		state.currentCommitIdx++;
 		return true;
 	}
 
 	const manual = createManualMode({
 		pi,
-		initLoop,
+		initManualSession,
 		stopLoop,
-		navigateToAnchor,
-		startWorkhorse,
-		pauseTimer,
-		resumeTimer,
-		getState: () => state,
-		getSavedEditorEnv: () => savedEnv,
-		modelToStr,
-		setStatusPrefix: (s: string) => { statusPrefix = s; },
+		beginInnerRound,
+		prepareForReview,
+		advanceCommit,
 	});
 
 	// ── Transitions ─────────────────────────────────────
@@ -576,7 +621,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	}
 
 	async function startWorkhorse(overseerText: string, ctx: any): Promise<void> {
-		resumeTimer(); // no-op for review/exec (never paused), resumes for manual
 		const cfg = loadConfig(ctx.cwd);
 		state.overseerLeafId = ctx.sessionManager.getLeafId();
 		if (!await navigateToAnchor(ctx)) return;
@@ -613,16 +657,8 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		updateStatus(ctx);
 		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
-		let workhorseInput = overseerText;
-		// Manual mode: ensure commit SHA prefix for the workhorse prompt
-		if (state.commitList.length > 0) {
-			const sha = state.commitList[state.currentCommitIdx];
-			if (sha && !workhorseInput.startsWith("[COMMIT:")) {
-				workhorseInput = `[COMMIT:${sha}]\n${workhorseInput}`;
-			}
-		}
 		const cfg2 = loadConfig(ctx.cwd);
-		pi.sendUserMessage(prompts.buildWorkhorsePrompt(workhorseInput, state.contextPaths, state.round, { rewriteHistory: cfg2.rewriteHistory }));
+		pi.sendUserMessage(prompts.buildWorkhorsePrompt(overseerText, state.contextPaths, state.round, { rewriteHistory: cfg2.rewriteHistory }));
 	}
 
 	async function onWorkhorseDone(workhorseText: string, eventCtx: any): Promise<void> {
@@ -827,6 +863,5 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		resume: resumeLoop,
 		onAgentEnd,
 		startManual: manual.start,
-		resetState: (overrides?: Partial<LoopState>) => { state = newState(overrides); },
 	};
 }

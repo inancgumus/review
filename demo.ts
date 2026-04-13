@@ -1,7 +1,6 @@
-/** Demo data for /loop:debug — kept separate to avoid inflating engine or index. */
+/** Demo data for /loop:debug — pure data, no engine mutation. */
 
 import type { RoundResult } from "./types.js";
-import type { Engine } from "./engine.js";
 import { V_APPROVED, V_CHANGES } from "./verdicts.js";
 
 const ROUNDS: Array<{ overseer: string; verdict: RoundResult["verdict"]; workhorse: string }> = [
@@ -22,7 +21,7 @@ const ROUNDS: Array<{ overseer: string; verdict: RoundResult["verdict"]; workhor
 	},
 ];
 
-export function seedDemoRounds(engine: Engine): void {
+export function buildDemoData(): { initialRequest: string; loopStartedAt: number; roundResults: RoundResult[] } {
 	const now = Date.now();
 	const durations = [18 * 60000, 12 * 60000, 7 * 60000];
 	let elapsed = 0;
@@ -45,10 +44,9 @@ export function seedDemoRounds(engine: Engine): void {
 		cursor += durations[i];
 	}
 
-	engine.resetState({
+	return {
 		initialRequest: "fix race condition in connection handler @internal/server/conn.go",
 		loopStartedAt: now - elapsed,
 		roundResults: results,
-		round: ROUNDS.length,
-	});
+	};
 }

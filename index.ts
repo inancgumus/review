@@ -16,7 +16,7 @@ import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
 import { createEngine } from "./engine.js";
 import { showLog } from "./log-view.js";
-import { seedDemoRounds } from "./demo.js";
+import { buildDemoData } from "./demo.js";
 
 export default function (pi: ExtensionAPI) {
 	const engine = createEngine(pi);
@@ -87,8 +87,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("loop:debug", {
 		description: "Simulate a 3-round review loop and open the log viewer",
 		handler: async (_args, ctx) => {
-			seedDemoRounds(engine);
-			await showLog(engine.state.initialRequest, engine.state.roundResults, ctx, engine.state.loopStartedAt);
+			const demo = buildDemoData();
+			await showLog(demo.initialRequest, demo.roundResults, ctx, demo.loopStartedAt);
 		},
 	});
 
