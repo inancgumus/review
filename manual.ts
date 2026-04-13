@@ -139,7 +139,6 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 		deps.resumeTimer();
 		state.userFeedback = feedback;
 		state.round = 1;
-		state.manualInnerRound = 0;
 		state.workhorseSummaries = [];
 		state.overseerLeafId = null;
 		state.roundStartedAt = Date.now();
@@ -273,7 +272,6 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			originalModelStr: deps.modelToStr(ctx.model), originalThinking: deps.pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 			commitList: [commit], currentCommitIdx: 0,
-			manualBase: resolvedBase,
 		}, ctx, { pauseTimer: true });
 
 		await showCommitForReview(ctx);
@@ -307,7 +305,6 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 				loopStartedAt: Date.now(),
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-				manualBase: anchor.data.manualBase ?? "",
 			}, ctx);
 			ctx.ui.notify(`Resuming manual review — commit ${deps.getState().currentCommitIdx + 1}/${commits.length}`, "info");
 			await showCommitForReview(ctx);

@@ -297,7 +297,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			mode: state.mode,
 			commitList: state.mode === "manual" ? state.commitList : undefined,
 			currentCommitIdx: state.mode === "manual" ? state.currentCommitIdx : undefined,
-			manualBase: state.mode === "manual" ? state.manualBase : undefined,
 		});
 		state.anchorEntryId = ctx.sessionManager.getLeafId();
 	}

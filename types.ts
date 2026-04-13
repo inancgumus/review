@@ -47,8 +47,6 @@ export interface LoopState {
 	commitList: string[];
 	currentCommitIdx: number;
 	userFeedback: string;
-	manualInnerRound: number;
-	manualBase: string;
 	pausedElapsed: number;
 	hasPlannotator: boolean | null;
 }
@@ -80,8 +78,6 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		commitList: [],
 		currentCommitIdx: 0,
 		userFeedback: "",
-		manualInnerRound: 0,
-		manualBase: "",
 		pausedElapsed: 0,
 		hasPlannotator: null,
 		...overrides,
