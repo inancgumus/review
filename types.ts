@@ -1,5 +1,13 @@
 export type LoopMode = "review" | "exec" | "manual";
 
+/** Modes register callbacks so the engine delegates instead of branching. */
+export interface ModeHooks {
+	onApproved?(ctx: any): void;
+	onChangesRequested?(text: string, ctx: any): void;
+	suppressRoundIncrement?: boolean;
+	suppressLogs?: boolean;
+}
+
 export type ReviewMode = "fresh" | "incremental";
 
 export interface RoundResult {

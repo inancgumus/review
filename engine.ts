@@ -4,7 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopMode, LoopState } from "./types.js";
+import type { LoopMode, LoopState, ModeHooks } from "./types.js";
 
 type Verdict = "approved" | "changes_requested" | null;
 import { newState } from "./types.js";
@@ -237,6 +237,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	let statusPrefix = "";
 	let statusTimer: ReturnType<typeof setInterval> | null = null;
 	let pauseStartedAt = 0;
+	let modeHooks: ModeHooks = {};
 
 	function totalElapsed(): number {
 		if (!state.loopStartedAt) return 0;
@@ -367,6 +368,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		stopLoop, navigateToAnchor, startWorkhorse, updateStatus,
 		startStatusTimer, rememberAnchor, blockInteractiveEditors,
 		log, pauseTimer, resumeTimer, modelToStr,
+		setModeHooks: (hooks: ModeHooks) => { modeHooks = hooks; },
 	});
 
 	// ── Transitions ─────────────────────────────────────
@@ -393,7 +395,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		state.overseerLeafId = null;
 		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.overseerModel} reviewing`;
 		updateStatus(ctx);
-		if (state.mode !== "manual") log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
+		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
@@ -441,12 +443,13 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		if (rr) rr.workhorseStartedAt = Date.now();
 		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.workhorseModel} fixing`;
 		updateStatus(ctx);
-		if (state.mode !== "manual") log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
+		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
 		let workhorseInput = overseerText;
-		if (state.mode === "manual" && state.commitList.length > 0) {
+		// Manual mode: ensure commit SHA prefix for the workhorse prompt
+		if (state.commitList.length > 0) {
 			const sha = state.commitList[state.currentCommitIdx];
-			if (!workhorseInput.startsWith("[COMMIT:")) {
+			if (sha && !workhorseInput.startsWith("[COMMIT:")) {
 				workhorseInput = `[COMMIT:${sha}]\n${workhorseInput}`;
 			}
 		}
@@ -459,7 +462,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const summaryText = `[Workhorse Round ${state.round}] ${summary}`;
 		state.workhorseSummaries.push(summaryText);
 		recordWorkhorse(state.round, summaryText);
-		if (state.mode !== "manual") log(`🔧 Workhorse done\n${summary}`);
+		if (!modeHooks.suppressLogs) log(`🔧 Workhorse done\n${summary}`);
 
 		if (state.contextHashes && state.contextPaths.length > 0) {
 			state.changedContextPaths = findChangedContextPaths(state.contextPaths, state.contextHashes);
@@ -484,9 +487,9 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const now = Date.now();
 		const rr = state.roundResults.find(r => r.round === state.round);
 		if (rr) rr.endedAt = now;
-		if (state.mode !== "manual" && state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
+		if (!modeHooks.suppressLogs && state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
-		if (state.mode !== "manual") state.round++;
+		if (!modeHooks.suppressRoundIncrement) state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
 	}
 
@@ -507,6 +510,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 		resumeTimer();
 		stopStatusTimer();
+		modeHooks = {};
 		state.overseerLeafId = null;
 		loopCommandCtx = null;
 		pauseStartedAt = 0;
@@ -533,9 +537,8 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			const rr = state.roundResults.find(r => r.round === state.round);
 			if (rr) rr.endedAt = now;
 
-			if (state.mode === "manual") {
-				pauseTimer();
-				deferIf("reviewing", () => void manual.afterInnerLoop(ctx));
+			if (modeHooks.onApproved) {
+				deferIf("reviewing", () => modeHooks.onApproved!(ctx));
 				return;
 			}
 
@@ -545,9 +548,9 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		if (verdict === "changes_requested") {
 			recordOverseer(state.round, "changes_requested", text);
 			const summary = sanitize(stripVerdict(text));
-			if (state.mode === "manual") state.round++;
+			if (modeHooks.onChangesRequested) modeHooks.onChangesRequested(text, ctx);
 			deferIf("reviewing", () => {
-				if (state.mode !== "manual") log(`❌ CHANGES REQUESTED\n${summary}`);
+				if (!modeHooks.suppressLogs) log(`❌ CHANGES REQUESTED\n${summary}`);
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
 				void continueLoop(ctx, { type: "workhorse", overseerText: text });
 			});

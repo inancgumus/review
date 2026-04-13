@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ModeHooks } from "./types.js";
 import type { LoopState } from "./types.js";
 import { newState } from "./types.js";
 import { loadConfig } from "./config.js";
@@ -33,14 +34,12 @@ interface ManualDeps {
 	pauseTimer(): void;
 	resumeTimer(): void;
 	modelToStr(model: any): string;
+	setModeHooks(hooks: ModeHooks): void;
 }
 
 interface ManualMode {
 	start(args: string, ctx: any): Promise<void>;
 	resume(ctx: any, anchor: { id: string; data: any }): Promise<void>;
-	showCommitForReview(ctx: any): Promise<void>;
-	startInnerLoop(feedback: string, ctx: any): Promise<void>;
-	afterInnerLoop(ctx: any): Promise<void>;
 }
 
 export function createManualMode(deps: ManualDeps): ManualMode {
@@ -168,6 +167,17 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 		deps.blockInteractiveEditors();
 		if (opts?.pauseTimer) deps.pauseTimer();
 		deps.startStatusTimer(ctx);
+		deps.setModeHooks({
+			onApproved(innerCtx: any) {
+				deps.pauseTimer();
+				void afterInnerLoop(innerCtx);
+			},
+			onChangesRequested() {
+				deps.getState().round++;
+			},
+			suppressRoundIncrement: true,
+			suppressLogs: true,
+		});
 	}
 
 	function resolveCommit(sha: string, cwd: string): { commit: string; base: string } | null {
@@ -330,5 +340,5 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 		}
 	}
 
-	return { start, resume, showCommitForReview, startInnerLoop, afterInnerLoop };
+	return { start, resume };
 }
