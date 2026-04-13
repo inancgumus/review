@@ -2,21 +2,6 @@ export type LoopMode = "review" | "exec" | "manual";
 
 export type ReviewMode = "fresh" | "incremental";
 
-export type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
-
-export interface Config {
-	overseerModel: string;
-	workhorseModel: string;
-	overseerThinking: ThinkingLevel;
-	workhorseThinking: ThinkingLevel;
-	maxRounds: number;
-	reviewMode: ReviewMode;
-	plannotator: boolean;
-	rewriteHistory: boolean;
-}
-
-export type Phase = "idle" | "reviewing" | "fixing" | "awaiting_feedback";
-
 export type Verdict = "approved" | "changes_requested" | null;
 
 export interface RoundResult {
@@ -31,7 +16,7 @@ export interface RoundResult {
 
 export interface LoopState {
 	mode: LoopMode;
-	phase: Phase;
+	phase: "idle" | "reviewing" | "fixing" | "awaiting_feedback";
 	round: number;
 	focus: string;
 	initialRequest: string;

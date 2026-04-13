@@ -1,7 +1,20 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import type { Config, ThinkingLevel } from "./types.js";
+import type { ReviewMode } from "./types.js";
+
+export type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
+
+export interface Config {
+	overseerModel: string;
+	workhorseModel: string;
+	overseerThinking: ThinkingLevel;
+	workhorseThinking: ThinkingLevel;
+	maxRounds: number;
+	reviewMode: ReviewMode;
+	plannotator: boolean;
+	rewriteHistory: boolean;
+}
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"];
 

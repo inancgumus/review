@@ -4,7 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopMode, LoopState, Config, Phase, Verdict } from "./types.js";
+import type { LoopMode, LoopState, Verdict } from "./types.js";
 import { newState } from "./types.js";
 import { loadConfig } from "./config.js";
 import * as fs from "node:fs";
