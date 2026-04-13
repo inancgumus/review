@@ -4,7 +4,8 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopMode, LoopState, ModeHooks } from "./types.js";
+import type { LoopMode, LoopState } from "./types.js";
+import type { ManualEngineAPI, ManualSessionInit } from "./manual.js";
 
 type Verdict = "approved" | "changes_requested" | null;
 import { newState } from "./types.js";
@@ -18,6 +19,16 @@ import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { git } from "./git.js";
 import { createManualMode } from "./manual.js";
 import { execSync } from "node:child_process";
+
+// ── Mode hooks (engine-private, not exported) ────────
+
+/** Engine-internal hook protocol — manual.ts never sees this. */
+interface ModeHooks {
+	onApproved?(ctx: any): void;
+	onChangesRequested?(text: string, ctx: any): void;
+	suppressRoundIncrement?: boolean;
+	suppressLogs?: boolean;
+}
 
 // ── Verdict parsing (absorbed from verdicts.ts) ───────
 
@@ -428,31 +439,78 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	// ── Manual mode support ─────────────────────
 
-	/** One-call loop setup: state, context, anchor, editors, timer, hooks. */
-	function prepareLoop(
-		overrides: Partial<LoopState>, ctx: any, hooks: ModeHooks, opts?: { pauseTimer?: boolean },
-	): { originalEditor: string | undefined } {
+	/** Semantic session init for manual mode. Engine handles all state internals. */
+	function initManualSession(init: ManualSessionInit, ctx: any): { originalEditor: string | undefined } {
 		loopCommandCtx = ctx;
 		state = newState({
-			...overrides,
+			mode: "manual",
+			phase: "awaiting_feedback",
+			round: 0,
+			reviewMode: "incremental",
+			focus: init.focus,
+			initialRequest: init.initialRequest,
+			contextPaths: init.contextPaths,
+			maxRounds: init.maxRounds,
+			loopStartedAt: init.loopStartedAt,
+			commitList: init.commitList ?? [],
+			currentCommitIdx: init.currentCommitIdx ?? 0,
+			anchorEntryId: init.anchorEntryId ?? null,
 			originalModelStr: modelToStr(ctx.model),
 			originalThinking: pi.getThinkingLevel(),
 		});
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
-		if (opts?.pauseTimer) pauseTimer();
+		if (init.pauseTimer) pauseTimer();
 		startStatusTimer(ctx);
-		modeHooks = hooks;
+		// Engine owns the hook protocol — manual provides semantic callbacks
+		modeHooks = {
+			onApproved(innerCtx: any) {
+				pauseTimer();
+				if (init.onApproved) init.onApproved(innerCtx);
+			},
+			onChangesRequested() { state.round++; },
+			suppressRoundIncrement: true,
+			suppressLogs: true,
+		};
 		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL };
 	}
 
-	const manual = createManualMode({
+	/** Reset inner-round state and kick off the workhorse. */
+	async function beginInnerRound(feedback: string, ctx: any): Promise<void> {
+		resumeTimer();
+		state.userFeedback = feedback;
+		state.round = 1;
+		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
+		state.roundStartedAt = Date.now();
+
+		// Build overseer text — engine knows the COMMIT prefix protocol
+		const sha = state.commitList[state.currentCommitIdx];
+		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
+
+		if (!await navigateToAnchor(ctx)) return;
+		await startWorkhorse(overseerText, ctx);
+	}
+
+	const manualEngine: ManualEngineAPI = {
 		pi,
-		engine: {
-			get state() { return state; },
-			prepareLoop, stopLoop, startWorkhorse,
+		get isIdle() { return state.phase === "idle"; },
+		get phase() { return state.phase; },
+		get commitList() { return state.commitList; },
+		get currentCommitIdx() { return state.currentCommitIdx; },
+		initManualSession,
+		stopLoop,
+		awaitFeedback() { state.phase = "awaiting_feedback"; },
+		advanceCommit() {
+			if (state.currentCommitIdx >= state.commitList.length - 1) return false;
+			state.currentCommitIdx++;
+			return true;
 		},
-	});
+		cachePlannotator(v: boolean) { state.hasPlannotator = v; },
+		beginInnerRound,
+	};
+
+	const manual = createManualMode(manualEngine);
 
 	// ── Transitions ─────────────────────────────────────
 
