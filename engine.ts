@@ -498,7 +498,24 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	const manual = createManualMode({
 		pi,
-		get state() { return state; },
+		getCommitInfo() {
+			const sha = state.commitList[state.currentCommitIdx];
+			if (!sha) return null;
+			return { sha, index: state.currentCommitIdx, total: state.commitList.length };
+		},
+		async advanceCommit(ctx: any) {
+			if (state.currentCommitIdx >= state.commitList.length - 1) {
+				ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+				await stopLoop(ctx);
+				return false;
+			}
+			state.currentCommitIdx++;
+			return true;
+		},
+		setAwaitingFeedback() { state.phase = "awaiting_feedback"; },
+		isIdle() { return state.phase === "idle"; },
+		isRunning() { return state.phase !== "idle"; },
+		getCurrentCommitIdx() { return state.currentCommitIdx; },
 		initSession: initManualSession,
 		stopLoop,
 		beginInnerRound,

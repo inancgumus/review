@@ -5,7 +5,6 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopState } from "./types.js";
 import { loadConfig } from "./config.js";
 import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
@@ -13,10 +12,21 @@ import { execSync } from "node:child_process";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
-/** 5-member seam: pi + state + 3 high-level engine operations. */
+/** Narrow engine interface — manual never touches lifecycle state directly. */
 interface ManualEngine {
 	pi: ExtensionAPI;
-	state: LoopState;
+	/** Read-only commit view for the review UI. */
+	getCommitInfo(): { sha: string; index: number; total: number } | null;
+	/** Advance to next commit. Returns false if no more commits. */
+	advanceCommit(ctx: any): Promise<boolean>;
+	/** Transition engine to awaiting_feedback phase. */
+	setAwaitingFeedback(): void;
+	/** Check if engine is idle (stopped). */
+	isIdle(): boolean;
+	/** Check if engine is already running. */
+	isRunning(): boolean;
+	/** Read currentCommitIdx for resume notification. */
+	getCurrentCommitIdx(): number;
 	initSession(init: SessionInit, ctx: any): { originalEditor: string | undefined };
 	stopLoop(ctx: any): Promise<void>;
 	beginInnerRound(feedback: string, ctx: any): Promise<void>;
@@ -44,10 +54,14 @@ export function createManualMode(engine: ManualEngine) {
 
 	// ── Plannotator integration ─────────────────────
 
+	// Local cache, reset on each start().
+	let plannotatorAvailable: boolean | null = null;
+
 	function detectPlannotator(cwd?: string): boolean {
 		const cfg = loadConfig(cwd || "");
-		if (!cfg.plannotator) { engine.state.hasPlannotator = false; return false; }
-		if (!engine.pi.events?.emit) { engine.state.hasPlannotator = false; return false; }
+		if (!cfg.plannotator) { plannotatorAvailable = false; return false; }
+		if (plannotatorAvailable !== null) return plannotatorAvailable;
+		if (!engine.pi.events?.emit) { plannotatorAvailable = false; return false; }
 		let responded = false;
 		engine.pi.events.emit("plannotator:request", {
 			requestId: `detect-${Date.now()}`,
@@ -55,7 +69,7 @@ export function createManualMode(engine: ManualEngine) {
 			payload: { reviewId: "__loop_detect__" },
 			respond: () => { responded = true; },
 		});
-		engine.state.hasPlannotator = responded;
+		plannotatorAvailable = responded;
 		return responded;
 	}
 
@@ -91,20 +105,14 @@ export function createManualMode(engine: ManualEngine) {
 		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
 
 		while (true) {
-			engine.state.phase = "awaiting_feedback";
-			const sha = engine.state.commitList[engine.state.currentCommitIdx];
-			if (!sha) { await engine.stopLoop(ctx); return; }
+			engine.setAwaitingFeedback();
+			const info = engine.getCommitInfo();
+			if (!info) { await engine.stopLoop(ctx); return; }
 
-			const result = reviewFn(sha, ctx.cwd, originalEditor);
+			const result = reviewFn(info.sha, ctx.cwd, originalEditor);
 
 			if (result.approved) {
-				// Advance to next commit or finish
-				if (engine.state.currentCommitIdx >= engine.state.commitList.length - 1) {
-					ctx.ui.notify(`All ${engine.state.commitList.length} commit(s) approved`, "success");
-					await engine.stopLoop(ctx);
-					return;
-				}
-				engine.state.currentCommitIdx++;
+				if (!await engine.advanceCommit(ctx)) return;
 				continue;
 			}
 
@@ -114,7 +122,7 @@ export function createManualMode(engine: ManualEngine) {
 	}
 
 	async function afterInnerLoop(ctx: any): Promise<void> {
-		if (engine.state.phase === "idle") return;
+		if (engine.isIdle()) return;
 		await engine.stopLoop(ctx);
 	}
 
@@ -159,7 +167,8 @@ export function createManualMode(engine: ManualEngine) {
 	// ── Entry points ────────────────────────────────
 
 	async function start(args: string, ctx: any): Promise<void> {
-		if (engine.state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
+		if (engine.isRunning()) { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
+		plannotatorAvailable = null; // Reset cache each time manual mode starts
 		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
@@ -242,7 +251,7 @@ export function createManualMode(engine: ManualEngine) {
 				onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
 			}, ctx);
 			originalEditor = result.originalEditor;
-			ctx.ui.notify(`Resuming manual review — commit ${engine.state.currentCommitIdx + 1}/${commits.length}`, "info");
+			ctx.ui.notify(`Resuming manual review — commit ${engine.getCurrentCommitIdx() + 1}/${commits.length}`, "info");
 			await showCommitForReview(ctx);
 			return;
 		}

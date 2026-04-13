@@ -5,7 +5,7 @@ import type { ReviewMode } from "./types.js";
 
 type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
 
-export interface Config {
+interface Config {
 	overseerModel: string;
 	workhorseModel: string;
 	overseerThinking: ThinkingLevel;

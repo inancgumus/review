@@ -117,7 +117,6 @@ export default function (pi: ExtensionAPI) {
 				else if (action.startsWith("Plannotator")) {
 					const newVal = !cfg.plannotator;
 					saveConfigField("plannotator", newVal as any);
-					engine.state.hasPlannotator = null;
 					ctx.ui.notify(`Plannotator → ${newVal ? "enabled" : "disabled"}`, "success");
 				}
 				else if (action.startsWith("Rewrite history")) {

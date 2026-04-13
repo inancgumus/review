@@ -40,7 +40,6 @@ export interface LoopState {
 	currentCommitIdx: number;
 	userFeedback: string;
 	pausedElapsed: number;
-	hasPlannotator: boolean | null;
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -71,7 +70,6 @@ export function newState(overrides: Partial<LoopState> = {}): LoopState {
 		currentCommitIdx: 0,
 		userFeedback: "",
 		pausedElapsed: 0,
-		hasPlannotator: null,
 		...overrides,
 	};
 }
