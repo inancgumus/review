@@ -16,7 +16,12 @@ const DEFAULTS: Config = {
 	rewriteHistory: false,
 };
 
-const SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+const DEFAULT_SETTINGS_PATH = path.join(os.homedir(), ".pi", "agent", "settings.json");
+
+// Lazy so tests can override via LOOP_SETTINGS_PATH after module load.
+function settingsPath(): string {
+	return process.env.LOOP_SETTINGS_PATH || DEFAULT_SETTINGS_PATH;
+}
 
 function readJSON(filePath: string): Record<string, any> | null {
 	try { return JSON.parse(fs.readFileSync(filePath, "utf-8")); }
@@ -30,7 +35,7 @@ function validThinking(v: unknown): ThinkingLevel | undefined {
 export { THINKING_LEVELS };
 
 export function loadConfig(_cwd: string): Config {
-	const saved = readJSON(SETTINGS_PATH)?.["loop"] ?? {};
+	const saved = readJSON(settingsPath())?.["loop"] ?? {};
 	return {
 		overseerModel: saved.overseerModel ?? DEFAULTS.overseerModel,
 		workhorseModel: saved.workhorseModel ?? DEFAULTS.workhorseModel,
@@ -45,7 +50,7 @@ export function loadConfig(_cwd: string): Config {
 
 /** Reads enabledModels from pi's settings.json (read-only for model picker). */
 export function getScopedModels(cwd: string): string[] {
-	const sources = [SETTINGS_PATH, path.join(cwd, ".pi", "settings.json")];
+	const sources = [settingsPath(), path.join(cwd, ".pi", "settings.json")];
 	let models: string[] = [];
 	for (const src of sources) {
 		const raw = readJSON(src);
@@ -56,9 +61,10 @@ export function getScopedModels(cwd: string): string[] {
 
 export function saveConfigField(key: keyof Config, value: string | number | boolean): void {
 	let settings: Record<string, any> = {};
-	try { settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8")); } catch { /* new */ }
+	const p = settingsPath();
+	try { settings = JSON.parse(fs.readFileSync(p, "utf-8")); } catch { /* new */ }
 	if (!settings["loop"]) settings["loop"] = {};
 	settings["loop"][key] = value;
-	fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
-	fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+	fs.mkdirSync(path.dirname(p), { recursive: true });
+	fs.writeFileSync(p, JSON.stringify(settings, null, 2) + "\n");
 }

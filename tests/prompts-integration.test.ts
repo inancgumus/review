@@ -7,7 +7,10 @@ import { tmpdir, homedir } from "node:os";
 import loopExtension from "../index.ts";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
-const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+// Isolate settings to a temp file so parallel test suites don't race on the global one.
+const SETTINGS_DIR = mkdtempSync(join(tmpdir(), "loop-settings-"));
+const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
+process.env.LOOP_SETTINGS_PATH = SETTINGS_PATH;
 
 function readSettings(): any {
 	try { return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")); }

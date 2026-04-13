@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// Isolate settings so parallel suites don't race on the global file.
+process.env.LOOP_SETTINGS_PATH = join(mkdtempSync(join(tmpdir(), "loop-settings-")), "settings.json");
+
 import loopExtension from "../index.ts";
 import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
