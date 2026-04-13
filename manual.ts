@@ -314,7 +314,11 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			return;
 		}
 
-		// Plannotator-backed manual session: restore state and re-open plannotator
+		// Plannotator-backed manual session: verify plannotator is still available
+		if (!detectPlannotator(ctx.cwd)) {
+			ctx.ui.notify("Plannotator is no longer available — cannot resume", "error");
+			return;
+		}
 		initManual({
 			mode: "manual",
 			phase: "awaiting_feedback",

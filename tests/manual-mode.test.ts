@@ -554,3 +554,43 @@ test("/loop:manual recovers from in-progress rebase", async () => {
 		repo.cleanup();
 	}
 });
+
+test("/loop:resume with plannotator anchor but no plannotator returns promptly", async () => {
+	const repo = createTempRepo();
+	try {
+		const h = createHarness(repo.cwd);
+		const notifyMsgs: string[] = [];
+		h.ctx.ui.notify = (msg: string) => { notifyMsgs.push(msg); };
+
+		// Simulate a saved plannotator-backed manual anchor (empty commitList)
+		h.ctx.sessionManager.getEntries().push({
+			id: "anchor-plan",
+			type: "custom",
+			customType: "loop-anchor",
+			data: {
+				mode: "manual",
+				focus: "manual review",
+				initialRequest: "manual review",
+				contextPaths: [],
+				commitList: [],
+				cwd: repo.cwd,
+			},
+		});
+
+		// No plannotator handler registered — resume should not hang
+		const resume = h.commands.get("loop:resume");
+		assert.ok(resume);
+
+		// Use a timeout to detect hangs
+		const result = await Promise.race([
+			resume("", h.ctx),
+			new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+		]);
+
+		assert.notEqual(result, "timeout", "resume should not hang when plannotator is unavailable");
+		const all = notifyMsgs.join(" ");
+		assert.ok(all.length > 0, "should notify user about the issue");
+	} finally {
+		repo.cleanup();
+	}
+});
