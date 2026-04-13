@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
-import { createEngine } from "./engine.js";
+import { createEngine, type Engine } from "./engine.js";
 import { showLog } from "./log-view.js";
 import { V_APPROVED, V_CHANGES } from "./verdicts.js";
 import { newState } from "./types.js";
@@ -168,10 +168,10 @@ export default function (pi: ExtensionAPI) {
 
 // ── Demo data for /loop:debug ───────────────────────────
 
-import type { Engine } from "./engine.js";
+import type { RoundResult } from "./types.js";
 
 function seedDemoRounds(engine: Engine): void {
-	const rounds: Array<{ overseer: string; verdict: "approved" | "changes_requested"; workhorse: string }> = [
+	const rounds: Array<{ overseer: string; verdict: RoundResult["verdict"]; workhorse: string }> = [
 		{
 			overseer: "## Critical Issues\n\nRace condition in `handleConn()`, error swallowed silently, missing context propagation, missing `defer conn.Close()`.\n\n" + V_CHANGES,
 			verdict: "changes_requested",
@@ -193,11 +193,28 @@ function seedDemoRounds(engine: Engine): void {
 	const durations = [18 * 60000, 12 * 60000, 7 * 60000];
 	let elapsed = 0;
 	for (const d of durations) elapsed += d;
-	engine.state = newState({ initialRequest: "fix race condition in connection handler @internal/server/conn.go", loopStartedAt: now - elapsed });
+
+	const results: RoundResult[] = [];
 	let cursor = now - elapsed;
 	for (let i = 0; i < rounds.length; i++) {
 		const r = rounds[i];
-		engine.seedDebugRound(i + 1, r.overseer, r.verdict, r.workhorse, cursor, cursor + durations[i], cursor + Math.floor(durations[i] * 0.4));
+		const workhorseSummary = r.workhorse ? `[Workhorse Round ${i + 1}] ${r.workhorse}` : "";
+		results.push({
+			round: i + 1,
+			verdict: r.verdict,
+			overseerText: r.overseer,
+			workhorseSummary,
+			startedAt: cursor,
+			endedAt: cursor + durations[i],
+			workhorseStartedAt: r.workhorse ? cursor + Math.floor(durations[i] * 0.4) : 0,
+		});
 		cursor += durations[i];
 	}
+
+	engine.state = newState({
+		initialRequest: "fix race condition in connection handler @internal/server/conn.go",
+		loopStartedAt: now - elapsed,
+		roundResults: results,
+		round: rounds.length,
+	});
 }

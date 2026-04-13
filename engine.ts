@@ -227,7 +227,6 @@ export interface Engine {
 	onAgentEnd(event: any, ctx: any): void;
 	state: LoopState;
 	startManual(args: string, ctx: any): Promise<void>;
-	seedDebugRound(round: number, overseerText: string, verdict: Verdict, workhorseSummary: string, startedAt: number, endedAt: number, workhorseStartedAt: number): void;
 }
 
 export function createEngine(pi: ExtensionAPI): Engine {
@@ -675,23 +674,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Seed demo rounds for /loop:debug ────────────────
-
-	function seedDebugRound(round: number, overseerText: string, verdict: Verdict, workhorseSummary: string, startedAt: number, endedAt: number, workhorseStartedAt: number): void {
-		state.round++;
-		state.roundStartedAt = startedAt;
-		if (verdict) recordOverseer(state.round, verdict, overseerText);
-		if (workhorseSummary) {
-			const summary = `[Workhorse Round ${state.round}] ${sanitize(stripVerdict(workhorseSummary))}`;
-			recordWorkhorse(state.round, summary);
-		}
-		const rr = state.roundResults.find(rr => rr.round === state.round);
-		if (rr) {
-			if (workhorseSummary) rr.workhorseStartedAt = workhorseStartedAt;
-			rr.endedAt = endedAt;
-		}
-	}
-
 	return {
 		get state() { return state; },
 		set state(s: LoopState) { state = s; },
@@ -700,6 +682,5 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		resume: resumeLoop,
 		onAgentEnd,
 		startManual: manual.start,
-		seedDebugRound,
 	};
 }

@@ -14,7 +14,7 @@ import { execSync } from "node:child_process";
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
 // Dependencies injected by the engine
-export interface ManualDeps {
+interface ManualDeps {
 	pi: ExtensionAPI;
 	getState(): LoopState;
 	setState(s: LoopState): void;
@@ -35,7 +35,7 @@ export interface ManualDeps {
 	modelToStr(model: any): string;
 }
 
-export interface ManualMode {
+interface ManualMode {
 	start(args: string, ctx: any): Promise<void>;
 	resume(ctx: any): Promise<void>;
 	showCommitForReview(ctx: any): Promise<void>;
