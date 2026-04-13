@@ -1,103 +1,83 @@
 # Deep Modules — Remaining Fixes
 
-What the refactor got wrong or left undone.
+Status: fixes 1-6 done. Two new issues found in review.
 
-## 1. engine.ts is the new god file (966 lines)
+## ⚠️ Process warning
 
-Plan estimated 500-600. Reality: 966. The original plan called for a separate `manual.ts` deep module. That extraction never happened. 236 lines of manual-mode logic sit inside engine.ts:
+Fixes 1-6 show a pattern: the workhorse took shortcuts and the overseer didn't catch them.
 
-- `detectPlannotator`, `openPlannotator`
-- `pauseTimer`, `resumeTimer`
-- `recoverGitState`, `advanceCommit`
-- `showCommitForReview`, `startManualInnerLoop`, `afterManualInnerLoop`
-- `startManual`, `initManual`, `resolveCommit`, `pickSingleCommit`
-- Manual resume branch inside `resumeLoop`
-- Manual approval branch inside `handleOverseerEnd`
+- ManualDeps got 20 methods because the workhorse mechanically moved code and wired every internal it touched as a dep. The overseer should have rejected this — a 20-method interface is not a deep module extraction, it's a copy-paste with extra steps.
+- Context hashing functions landed in prompts.ts because the workhorse bulk-moved everything from context.ts into wherever was convenient. The overseer should have caught that file hashing has nothing to do with prompt building.
+- The workhorse will always take the path of least resistance: move code, wire deps, make tests pass. That satisfies "tests green" but not "deep modules." The overseer must reject mechanical extractions that pass tests but violate the design intent.
 
-This is the exact same problem we had with the old `index.ts` — just renamed. The Engine interface is clean (7 members), but the implementation is a monolith again. An AI changing manual mode has to read 966 lines.
+**Rule for future steps:** The overseer must verify interface surface, not just test results. If a new module's dependency interface has more than ~5 members, that's a red flag. If a function lands in a module where it doesn't conceptually belong, that's a reject — even if tests pass.
 
-**Fix:** Extract `manual.ts`. Interface: `createManualMode(engine) → { start, resume }`. Move all manual-mode functions there. engine.ts drops to ~730 lines. manual.ts is ~250 lines with 2 public methods. Both are deep.
+## ✅ Fixed: 1. engine.ts god file → extracted manual.ts
+## ✅ Fixed: 2. context.ts absorbed into engine.ts
+## ✅ Fixed: 3. verdicts.ts shrunk to 3 constants
+## ✅ Fixed: 4. types.ts single-consumer types moved
+## ✅ Fixed: 5. Missing test behaviors added
+## ✅ Fixed: 6. seedDemoRounds extracted to demo.ts
 
-## 2. context.ts still exists (27 lines)
+## 7. ManualDeps has 20 methods — fat interface defeats deep module purpose
 
-Plan said absorb it. It wasn't absorbed. 27 lines with one export (`parseArgs`) imported by one consumer (`engine.ts`). This is a shallow module. Its interface IS its implementation.
+manual.ts was extracted from engine.ts. Good. But the seam is wrong.
 
-**Fix:** Move `parseArgs` into engine.ts. Delete context.ts.
+`ManualDeps` — the interface manual.ts uses to talk to engine.ts — has 20 methods:
 
-## 3. verdicts.ts leaks implementation (8 exports, only 3 needed)
-
-Tests need `V_APPROVED`, `V_CHANGES`, `V_FIXES_COMPLETE`. Those are protocol constants — shared contract, correct to export.
-
-The other 5 exports are implementation:
-- `VERDICT_STRIP_RE` → only used by `log-view.ts`
-- `CHANGES_STRIP_RE` → only used by `prompts.ts`
-- `matchVerdict` → only used by `engine.ts`
-- `hasFixesComplete` → only used by `engine.ts`
-- `stripVerdict` → only used by `engine.ts`
-
-These are not shared protocol. They're internal parsing details consumed by one module each.
-
-**Fix:** Move `matchVerdict`, `hasFixesComplete`, `stripVerdict` into engine.ts. Move `CHANGES_STRIP_RE` into prompts.ts. Move `VERDICT_STRIP_RE` into log-view.ts. verdicts.ts shrinks to 3 constants.
-
-## 4. types.ts exports 11 things, 5 are single-consumer
-
-Every export is interface surface. Types that only one module uses should live in that module.
-
-| Type | Used by |
-|---|---|
-| `Phase` | engine.ts only |
-| `OverseerPromptParams` | prompts.ts only |
-| `PromptSet` | prompts.ts only |
-| `RoundResult` | log-view.ts only |
-| `LoopState` | engine.ts only |
-| `ReviewMode` | index.ts only |
-
-6 types used by one consumer each. They should be colocated.
-
-**Fix:** Move single-consumer types into their consumer modules. types.ts keeps only genuinely shared types: `LoopMode`, `ThinkingLevel`, `Config`, `Verdict`, `newState` (if still needed across modules), and any type that multiple modules actually import.
-
-After this, types.ts has ~5 exports. Each module defines the types it owns.
-
-## 5. Two test behaviors missing
-
-The plan said "preserve all existing test behaviors." Two were dropped:
-
-**a) "Manual workhorse without COMMIT prefix uses 'referenced in the feedback above'"**
-
-The code path exists in prompts.ts (line: `"The commit under review is referenced in the feedback above."`). No test exercises it. The old `prompts-manual.test.ts` tested it directly. The integration test should trigger manual mode without a commit SHA somehow — or acknowledge this is dead code and remove it.
-
-**b) "Manual overseer round 1 includes user feedback text"**
-
-Round 2 test checks `assert.match(overseer2, /fix error handling/)`. Round 1 doesn't. The old test explicitly verified overseer round 1 prompt contains the user's feedback. Add the assertion to an existing manual-mode test — it's one line.
-
-## 6. seedDemoRounds is 120 lines of hardcoded demo data inside engine.ts
-
-`seedDemoRounds` (lines 810-919) is a 120-line function of hardcoded strings for `/loop:debug`. It's not engine logic. It's demo data. It inflates engine.ts and has nothing to do with the state machine.
-
-**Fix:** Move to index.ts (it's a command handler concern) or a separate `demo.ts` file. Engine shouldn't carry demo data.
-
-## Execution order
-
-1. Add the 2 missing test assertions (one-liners, tests must pass)
-2. Extract manual.ts from engine.ts (tests pass — they don't import engine.ts)
-3. Absorb context.ts into engine.ts (delete context.ts)
-4. Move single-consumer types from types.ts into their modules
-5. Move single-consumer verdicts exports into their consumers
-6. Move seedDemoRounds out of engine.ts
-
-After all fixes:
-
-```
-index.ts       ~180 lines   — command router + demo data
-engine.ts      ~600 lines   — loop state machine (2 exports)
-manual.ts      ~250 lines   — manual review mode (2 exports)
-git.ts         ~270 lines   — git operations (2 exports)
-prompts.ts     ~510 lines   — prompt building (3 exports)
-log-view.ts    ~600 lines   — TUI log viewer (3 exports)
-config.ts       ~64 lines   — settings persistence (4 exports)
-types.ts        ~50 lines   — shared types only (~5 exports)
-verdicts.ts     ~10 lines   — 3 protocol constants
-diff-review.ts ~159 lines   — editor-based annotation (1 export)
+```typescript
+interface ManualDeps {
+    pi: ExtensionAPI;
+    getState(): LoopState;
+    setState(s: LoopState): void;
+    getLoopCommandCtx(): any;
+    setLoopCommandCtx(ctx: any): void;
+    setStatusPrefix(prefix: string): void;
+    getSavedEditorEnv(): Record<string, string | undefined>;
+    stopLoop(ctx: any): Promise<void>;
+    navigateToAnchor(ctx: any): Promise<boolean>;
+    startWorkhorse(text: string, ctx: any): Promise<void>;
+    updateStatus(ctx: any): void;
+    startStatusTimer(ctx: any): void;
+    rememberAnchor(ctx: any): void;
+    blockInteractiveEditors(): void;
+    log(text: string): void;
+    pauseTimer(): void;
+    resumeTimer(): void;
+    modelToStr(model: any): string;
+    setModeHooks(hooks: ModeHooks): void;
+}
 ```
 
-Every module deep. No shallow survivors. No god files.
+This is not a deep module. This is a shallow extraction with a fat umbilical cord back to engine.ts. The interface surface is nearly as complex as the implementation it wraps (348 lines). The whole point: simple interface, complex implementation. ManualDeps is the opposite.
+
+What happened: manual mode was ripped out mechanically. Every internal function it touched became a dep. Nobody asked "what's the minimal interface manual.ts actually needs?"
+
+**Fix:** Collapse ManualDeps into 3-4 high-level operations that hide engine internals:
+
+```typescript
+interface ManualDeps {
+    pi: ExtensionAPI;
+    engine: {
+        state: LoopState;
+        prepareLoop(opts: ManualLoopInit, ctx: any): void; // setState + setLoopCommandCtx + rememberAnchor + blockEditors + startTimer
+        stopLoop(ctx: any): Promise<void>;
+        startWorkhorse(text: string, ctx: any): Promise<void>;
+        log(text: string): void;
+    };
+}
+```
+
+`prepareLoop` absorbs the 10+ setup calls manual.ts makes into one call. Engine owns the setup sequence — manual.ts just says what it wants. `modelToStr`, `pauseTimer`, `resumeTimer`, `setStatusPrefix`, `updateStatus`, `getSavedEditorEnv`, `navigateToAnchor` — all engine internals that manual.ts shouldn't know about.
+
+This may require manual.ts to delegate more back to engine. That's fine. The module boundary should be: manual.ts owns commit selection, editor review, and plannotator integration. Engine owns loop lifecycle, timing, status, model switching. If manual.ts needs to pause a timer, that's engine's job through a higher-level call (e.g. `engine.enterFeedbackPhase()`).
+
+## 8. snapshotContextHashes and changedContextPaths live in prompts.ts
+
+These are context file hashing functions. They detect when @path files change between rounds. They have nothing to do with prompt building.
+
+They're in prompts.ts because context.ts was being absorbed and expandContextPaths went to prompts.ts, so the rest followed. Lazy placement.
+
+Only consumer: engine.ts.
+
+**Fix:** Move both into engine.ts. prompts.ts should only export `promptSets`.

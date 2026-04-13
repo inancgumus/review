@@ -12,7 +12,8 @@ import { loadConfig } from "./config.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { promptSets, snapshotContextHashes, changedContextPaths as findChangedContextPaths } from "./prompts.js";
+import { createHash } from "node:crypto";
+import { promptSets } from "./prompts.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { git } from "./git.js";
 import { createManualMode } from "./manual.js";
@@ -40,6 +41,69 @@ function stripVerdict(text: string): string {
 		.replace(VERDICT_STRIP_RE, "")
 		.replace(FIXES_COMPLETE_RE, "")
 		.trim();
+}
+
+// ── Context file hashing (moved from prompts.ts — engine concern, not prompt concern) ──
+
+const MAX_FILE_SIZE = 200_000;
+const MAX_DIR_DEPTH = 3;
+
+function readFileContent(filePath: string): string | null {
+	try {
+		const resolved = expandTilde(filePath);
+		const stat = fs.statSync(resolved);
+		if (stat.isFile()) {
+			if (stat.size > MAX_FILE_SIZE)
+				return `[${filePath}: skipped, ${Math.round(stat.size / 1024)}KB > 50KB limit]`;
+			return `### ${filePath}\n\`\`\`\n${fs.readFileSync(resolved, "utf-8")}\n\`\`\``;
+		}
+		if (stat.isDirectory()) return readDirContent(resolved, filePath, 0);
+	} catch { /* skip */ }
+	return null;
+}
+
+function readDirContent(dirPath: string, displayPath: string, depth: number): string {
+	if (depth >= MAX_DIR_DEPTH) return `[${displayPath}: max depth reached]`;
+	const parts: string[] = [];
+	for (const entry of safeDirEntries(dirPath)) {
+		if (entry.name.startsWith(".")) continue;
+		const full = path.join(dirPath, entry.name);
+		const display = path.join(displayPath, entry.name);
+		const content = entry.isFile()
+			? readFileContent(full)
+			: entry.isDirectory()
+				? readDirContent(full, display, depth + 1)
+				: null;
+		if (content) parts.push(content);
+	}
+	return parts.join("\n\n");
+}
+
+function safeDirEntries(dirPath: string): fs.Dirent[] {
+	try { return fs.readdirSync(dirPath, { withFileTypes: true }); }
+	catch { return []; }
+}
+
+function snapshotContextHashes(paths: string[]): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const p of paths) {
+		const content = readFileContent(p);
+		if (content) {
+			map.set(p, createHash("sha256").update(content).digest("hex"));
+		}
+	}
+	return map;
+}
+
+function findChangedContextPaths(paths: string[], before: Map<string, string>): string[] {
+	const now = snapshotContextHashes(paths);
+	const changed: string[] = [];
+	for (const p of paths) {
+		const nowHash = now.get(p);
+		const beforeHash = before.get(p);
+		if (nowHash && nowHash !== beforeHash) changed.push(p);
+	}
+	return changed;
 }
 
 // ── Arg parsing (absorbed from context.ts) ─────────────
@@ -355,20 +419,40 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Manual mode ─────────────────────────────
+	// ── Manual mode support ─────────────────────
+
+	/** One-call loop setup: state, context, anchor, editors, timer, hooks. */
+	function prepareLoop(
+		overrides: Partial<LoopState>, ctx: any, hooks: ModeHooks, opts?: { pauseTimer?: boolean },
+	): { originalEditor: string | undefined } {
+		loopCommandCtx = ctx;
+		state = newState({
+			...overrides,
+			originalModelStr: modelToStr(ctx.model),
+			originalThinking: pi.getThinkingLevel(),
+		});
+		rememberAnchor(ctx);
+		blockInteractiveEditors();
+		if (opts?.pauseTimer) pauseTimer();
+		startStatusTimer(ctx);
+		modeHooks = hooks;
+		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+	}
+
+	/** Update status bar with a manual-mode prefix. */
+	function setStatus(prefix: string, ctx: any): void {
+		statusPrefix = prefix;
+		updateStatus(ctx);
+	}
 
 	const manual = createManualMode({
 		pi,
-		getState: () => state,
-		setState: (s) => { state = s; },
-		getLoopCommandCtx: () => loopCommandCtx,
-		setLoopCommandCtx: (ctx) => { loopCommandCtx = ctx; },
-		setStatusPrefix: (s) => { statusPrefix = s; },
-		getSavedEditorEnv: () => savedEnv,
-		stopLoop, navigateToAnchor, startWorkhorse, updateStatus,
-		startStatusTimer, rememberAnchor, blockInteractiveEditors,
-		log, pauseTimer, resumeTimer, modelToStr,
-		setModeHooks: (hooks: ModeHooks) => { modeHooks = hooks; },
+		engine: {
+			get state() { return state; },
+			prepareLoop, stopLoop, startWorkhorse, log,
+			getOriginalEditor: () => savedEnv.EDITOR || savedEnv.VISUAL,
+			setStatus, pauseTimer, resumeTimer,
+		},
 	});
 
 	// ── Transitions ─────────────────────────────────────
@@ -409,6 +493,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	}
 
 	async function startWorkhorse(overseerText: string, ctx: any): Promise<void> {
+		resumeTimer(); // no-op for review/exec (never paused), resumes for manual
 		const cfg = loadConfig(ctx.cwd);
 		state.overseerLeafId = ctx.sessionManager.getLeafId();
 		if (!await navigateToAnchor(ctx)) return;
@@ -538,7 +623,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			if (rr) rr.endedAt = now;
 
 			if (modeHooks.onApproved) {
-				deferIf("reviewing", () => modeHooks.onApproved!(ctx));
+				deferIf("reviewing", () => { pauseTimer(); modeHooks.onApproved!(ctx); });
 				return;
 			}
 

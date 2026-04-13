@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createHash } from "node:crypto";
 /** Strip C0/C1/DEL/zero-width/line separator chars. */
 function sanitize(text: string): string {
 	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
@@ -85,29 +84,7 @@ function expandContextPaths(paths: string[]): string {
 	return parts.length > 0 ? "\n\n## Context files\n\n" + parts.join("\n\n") : "";
 }
 
-/** Hash each @path's content. Returns Map<path, sha256>. */
-export function snapshotContextHashes(paths: string[]): Map<string, string> {
-	const map = new Map<string, string>();
-	for (const p of paths) {
-		const content = readFileContent(p);
-		if (content) {
-			map.set(p, createHash("sha256").update(content).digest("hex"));
-		}
-	}
-	return map;
-}
 
-/** Return paths whose content hash differs from the before snapshot. */
-export function changedContextPaths(paths: string[], before: Map<string, string>): string[] {
-	const now = snapshotContextHashes(paths);
-	const changed: string[] = [];
-	for (const p of paths) {
-		const nowHash = now.get(p);
-		const beforeHash = before.get(p);
-		if (nowHash && nowHash !== beforeHash) changed.push(p);
-	}
-	return changed;
-}
 
 // ── Review prompts ──────────────────────────────────────
 

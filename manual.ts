@@ -1,12 +1,11 @@
 /**
  * Manual review mode — commit-by-commit review driven by the user.
- * Extracted from engine.ts to keep the main state machine focused on shared loop logic.
+ * Owns: commit selection, editor review, plannotator integration.
+ * Engine owns: loop lifecycle, timing, status, model switching.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { ModeHooks } from "./types.js";
-import type { LoopState } from "./types.js";
-import { newState } from "./types.js";
+import type { ModeHooks, LoopState } from "./types.js";
 import { loadConfig } from "./config.js";
 import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
@@ -14,27 +13,20 @@ import { execSync } from "node:child_process";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
-// Dependencies injected by the engine
+/** Narrow interface — engine internals stay hidden behind these ~8 methods. */
 interface ManualDeps {
 	pi: ExtensionAPI;
-	getState(): LoopState;
-	setState(s: LoopState): void;
-	getLoopCommandCtx(): any;
-	setLoopCommandCtx(ctx: any): void;
-	setStatusPrefix(prefix: string): void;
-	getSavedEditorEnv(): Record<string, string | undefined>;
-	stopLoop(ctx: any): Promise<void>;
-	navigateToAnchor(ctx: any): Promise<boolean>;
-	startWorkhorse(text: string, ctx: any): Promise<void>;
-	updateStatus(ctx: any): void;
-	startStatusTimer(ctx: any): void;
-	rememberAnchor(ctx: any): void;
-	blockInteractiveEditors(): void;
-	log(text: string): void;
-	pauseTimer(): void;
-	resumeTimer(): void;
-	modelToStr(model: any): string;
-	setModeHooks(hooks: ModeHooks): void;
+	engine: {
+		state: LoopState;
+		prepareLoop(overrides: Partial<LoopState>, ctx: any, hooks: ModeHooks, opts?: { pauseTimer?: boolean }): { originalEditor: string | undefined };
+		stopLoop(ctx: any): Promise<void>;
+		startWorkhorse(text: string, ctx: any): Promise<void>;
+		log(text: string): void;
+		getOriginalEditor(): string | undefined;
+		setStatus(prefix: string, ctx: any): void;
+		pauseTimer(): void;
+		resumeTimer(): void;
+	};
 }
 
 interface ManualMode {
@@ -43,7 +35,6 @@ interface ManualMode {
 }
 
 export function createManualMode(deps: ManualDeps): ManualMode {
-	// Overridable for testing via pi.events
 	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
 	if (deps.pi.events?.on) {
 		deps.pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
@@ -52,8 +43,8 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	// ── Plannotator integration ─────────────────────
 
 	function detectPlannotator(cwd?: string): boolean {
-		const state = deps.getState();
-		const cfg = loadConfig(cwd || deps.getLoopCommandCtx()?.cwd || "");
+		const state = deps.engine.state;
+		const cfg = loadConfig(cwd || "");
 		if (!cfg.plannotator) { state.hasPlannotator = false; return false; }
 		if (state.hasPlannotator !== null) return state.hasPlannotator;
 		if (!deps.pi.events?.emit) { state.hasPlannotator = false; return false; }
@@ -95,10 +86,10 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	}
 
 	async function advanceCommit(ctx: any): Promise<boolean> {
-		const state = deps.getState();
+		const state = deps.engine.state;
 		if (state.currentCommitIdx >= state.commitList.length - 1) {
 			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-			await deps.stopLoop(ctx);
+			await deps.engine.stopLoop(ctx);
 			return false;
 		}
 		state.currentCommitIdx++;
@@ -108,20 +99,17 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	// ── Commit review UI ────────────────────────────
 
 	async function showCommitForReview(ctx: any): Promise<void> {
-		const state = deps.getState();
-		if (!recoverGitState(ctx)) { await deps.stopLoop(ctx); return; }
+		const state = deps.engine.state;
+		if (!recoverGitState(ctx)) { await deps.engine.stopLoop(ctx); return; }
 
 		while (true) {
 			state.phase = "awaiting_feedback";
 			const sha = state.commitList[state.currentCommitIdx];
-			if (!sha) { await deps.stopLoop(ctx); return; }
+			if (!sha) { await deps.engine.stopLoop(ctx); return; }
 			const shortSha = sha.slice(0, 7);
-			const subject = git.getCommitSubject(ctx.cwd, sha);
-			deps.setStatusPrefix(`Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`);
-			deps.updateStatus(ctx);
+			deps.engine.setStatus(`Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`, ctx);
 
-			const savedEnv = deps.getSavedEditorEnv();
-			const origEditor = savedEnv.EDITOR || savedEnv.VISUAL || process.env.EDITOR || process.env.VISUAL;
+			const origEditor = deps.engine.getOriginalEditor();
 			const result = reviewFn(sha, ctx.cwd, origEditor);
 
 			if (result.approved) {
@@ -135,8 +123,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	}
 
 	async function startInnerLoop(feedback: string, ctx: any): Promise<void> {
-		const state = deps.getState();
-		deps.resumeTimer();
+		const state = deps.engine.state;
 		state.userFeedback = feedback;
 		state.round = 1;
 		state.workhorseSummaries = [];
@@ -146,38 +133,28 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 		const sha = state.commitList[state.currentCommitIdx];
 		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
 
-		if (!await deps.navigateToAnchor(ctx)) return;
-		await deps.startWorkhorse(overseerText, ctx);
+		await deps.engine.startWorkhorse(overseerText, ctx);
 	}
 
 	async function afterInnerLoop(ctx: any): Promise<void> {
-		const state = deps.getState();
-		if (state.phase === "idle") return;
-		const useCtx = deps.getLoopCommandCtx() || ctx;
-		await deps.stopLoop(useCtx);
+		if (deps.engine.state.phase === "idle") return;
+		await deps.engine.stopLoop(ctx);
 	}
 
-	// ── Init helpers ────────────────────────────────
-
-	function initManual(overrides: Partial<LoopState>, ctx: any, opts?: { pauseTimer?: boolean }): void {
-		deps.setLoopCommandCtx(ctx);
-		deps.setState(newState(overrides));
-		deps.rememberAnchor(ctx);
-		deps.blockInteractiveEditors();
-		if (opts?.pauseTimer) deps.pauseTimer();
-		deps.startStatusTimer(ctx);
-		deps.setModeHooks({
-			onApproved(innerCtx: any) {
-				deps.pauseTimer();
-				void afterInnerLoop(innerCtx);
+	function buildModeHooks(): ModeHooks {
+		return {
+			onApproved(ctx: any) {
+				void afterInnerLoop(ctx);
 			},
 			onChangesRequested() {
-				deps.getState().round++;
+				deps.engine.state.round++;
 			},
 			suppressRoundIncrement: true,
 			suppressLogs: true,
-		});
+		};
 	}
+
+	// ── Commit resolution ───────────────────────────
 
 	function resolveCommit(sha: string, cwd: string): { commit: string; base: string } | null {
 		let commit: string;
@@ -218,26 +195,24 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	// ── Entry points ────────────────────────────────
 
 	async function start(args: string, ctx: any): Promise<void> {
-		const state = deps.getState();
-		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
+		if (deps.engine.state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
 		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
 
 		// Plannotator: delegate everything (commit selection, diff, annotation)
 		if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
-			initManual({
+			deps.engine.prepareLoop({
 				mode: "manual", phase: "awaiting_feedback", round: 0,
 				focus: "manual review", initialRequest: "manual review",
 				contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
-				originalModelStr: deps.modelToStr(ctx.model), originalThinking: deps.pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
-			}, ctx);
+			}, ctx, buildModeHooks());
 			ctx.ui.notify("Opening plannotator...", "info");
 			const result = await openPlannotator(ctx);
 			if (!result || result.approved) {
 				ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
-				await deps.stopLoop(ctx);
+				await deps.engine.stopLoop(ctx);
 				return;
 			}
 			if (result.feedback) {
@@ -248,38 +223,32 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 
 		// Editor path: pick a single commit, review in $EDITOR
 		let commit: string;
-		let resolvedBase: string;
 
 		if (trimmedArgs) {
 			const resolved = resolveCommit(trimmedArgs, ctx.cwd);
 			if (!resolved) { ctx.ui.notify(`Could not resolve: ${trimmedArgs}`, "error"); return; }
 			commit = resolved.commit;
-			resolvedBase = resolved.base;
 		} else {
 			const picked = await pickSingleCommit(ctx);
 			if (!picked) return;
 			const resolved = resolveCommit(picked, ctx.cwd);
 			if (!resolved) { ctx.ui.notify(`Could not resolve: ${picked}`, "error"); return; }
 			commit = resolved.commit;
-			resolvedBase = resolved.base;
 		}
 
-		initManual({
+		deps.engine.prepareLoop({
 			mode: "manual", phase: "awaiting_feedback", round: 0,
 			focus: `manual review: ${commit.slice(0, 7)}`,
 			initialRequest: `manual review: ${commit.slice(0, 7)}`,
 			contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
-			originalModelStr: deps.modelToStr(ctx.model), originalThinking: deps.pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 			commitList: [commit], currentCommitIdx: 0,
-		}, ctx, { pauseTimer: true });
+		}, ctx, buildModeHooks(), { pauseTimer: true });
 
 		await showCommitForReview(ctx);
 	}
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
-		// Restore the repo cwd saved in the anchor, falling back to gitToplevel detection.
-		// pi can set ctx.cwd to ~ when launched with a path arg, so we can't trust it.
 		ctx.cwd = anchor.data.cwd || git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];
@@ -294,7 +263,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 					return;
 				}
 			}
-			initManual({
+			deps.engine.prepareLoop({
 				mode: "manual",
 				phase: "awaiting_feedback",
 				reviewMode: "incremental",
@@ -302,14 +271,12 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 				initialRequest: anchor.data.initialRequest ?? `manual review: ${commits.length} commit(s)`,
 				contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
 				maxRounds: cfg.maxRounds,
-				originalModelStr: deps.modelToStr(ctx.model),
-				originalThinking: deps.pi.getThinkingLevel(),
 				anchorEntryId: anchor.id,
 				loopStartedAt: Date.now(),
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-			}, ctx);
-			ctx.ui.notify(`Resuming manual review — commit ${deps.getState().currentCommitIdx + 1}/${commits.length}`, "info");
+			}, ctx, buildModeHooks());
+			ctx.ui.notify(`Resuming manual review — commit ${deps.engine.state.currentCommitIdx + 1}/${commits.length}`, "info");
 			await showCommitForReview(ctx);
 			return;
 		}
@@ -319,7 +286,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			ctx.ui.notify("Plannotator is no longer available — cannot resume", "error");
 			return;
 		}
-		initManual({
+		deps.engine.prepareLoop({
 			mode: "manual",
 			phase: "awaiting_feedback",
 			reviewMode: "incremental",
@@ -327,16 +294,14 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			initialRequest: anchor.data.initialRequest ?? "manual review",
 			contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
 			maxRounds: cfg.maxRounds,
-			originalModelStr: deps.modelToStr(ctx.model),
-			originalThinking: deps.pi.getThinkingLevel(),
 			anchorEntryId: anchor.id,
 			loopStartedAt: Date.now(),
-		}, ctx);
+		}, ctx, buildModeHooks());
 		ctx.ui.notify("Resuming manual review...", "info");
 		const result = await openPlannotator(ctx);
 		if (!result || result.approved) {
 			ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
-			await deps.stopLoop(ctx);
+			await deps.engine.stopLoop(ctx);
 			return;
 		}
 		if (result.feedback) {
