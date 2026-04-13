@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { promptSets } from "./prompts.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { git } from "./git.js";
-import { createManualMode } from "./manual.js";
+import { createManualMode, type ManualSessionInit } from "./manual.js";
 import { execSync } from "node:child_process";
 
 // ── Mode hooks (engine-private, not exported) ────────
@@ -502,44 +502,88 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	// ── Generic loop primitives (used by manual.ts and engine internals) ──
 
-	function prepareLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
-		pauseTimer?: boolean;
-		hooks?: ModeHooks;
-	}): boolean {
+	// ── Manual-mode semantic primitives ─────────────────
+	// Engine owns state. Manual.ts uses these instead of touching fields directly.
+
+	function startManualSession(opts: ManualSessionInit, ctx: any): boolean {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
 		loopCommandCtx = ctx;
 		state = newState({
-			...overrides,
+			mode: "manual",
+			phase: "awaiting_feedback",
+			round: 0,
+			reviewMode: "incremental",
+			focus: opts.focus,
+			initialRequest: opts.initialRequest,
+			contextPaths: opts.contextPaths,
+			maxRounds: opts.maxRounds,
+			loopStartedAt: Date.now(),
+			commitList: opts.commitList ?? [],
+			currentCommitIdx: opts.currentCommitIdx ?? 0,
+			anchorEntryId: opts.anchorEntryId ?? null,
 			originalModelStr: modelToStr(ctx.model),
 			originalThinking: pi.getThinkingLevel(),
 		});
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
-		if (opts?.pauseTimer) pauseTimer();
+		if (opts.pauseTimer) pauseTimer();
 		startStatusTimer(ctx);
-		if (opts?.hooks) modeHooks = opts.hooks;
+		// Wire manual-mode verdict hooks (engine-internal, manual never sees ModeHooks)
+		modeHooks = {
+			onApproved: (innerCtx: any) => { pauseTimer(); opts.onInnerLoopDone(innerCtx); },
+			onChangesRequested: () => { state.round++; },
+			suppressRoundIncrement: true,
+			suppressLogs: true,
+		};
 		return true;
 	}
 
-	async function startRound(text: string, ctx: any): Promise<void> {
+	function beginManualRound(feedback: string, ctx: any): Promise<void> {
+		state.userFeedback = feedback;
+		state.round = 1;
+		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
+		state.roundStartedAt = Date.now();
+
+		const sha = state.commitList[state.currentCommitIdx];
+		const text = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
+
 		resumeTimer();
-		if (!await navigateToAnchor(ctx)) return;
-		await startWorkhorse(text, ctx);
+		return (async () => {
+			if (!await navigateToAnchor(ctx)) return;
+			await startWorkhorse(text, ctx);
+		})();
 	}
 
-	function setStatus(prefix: string, ctx: any): void {
-		statusPrefix = prefix;
-		updateStatus(ctx);
+	function prepareForReview(ctx: any): { sha: string | undefined; savedEditor: string | undefined } {
+		state.phase = "awaiting_feedback";
+		const sha = state.commitList[state.currentCommitIdx];
+		if (sha) {
+			statusPrefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
+			updateStatus(ctx);
+		}
+		return { sha, savedEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+	}
+
+	function advanceCommit(): { advanced: boolean; total: number } {
+		const total = state.commitList.length;
+		if (state.currentCommitIdx >= total - 1) return { advanced: false, total };
+		state.currentCommitIdx++;
+		return { advanced: true, total };
+	}
+
+	function isRunning(): boolean {
+		return state.phase !== "idle";
 	}
 
 	const manual = createManualMode({
 		pi,
-		state: () => state,
-		prepareLoop,
+		startManualSession,
 		stopLoop,
-		startRound,
-		setStatus,
-		getSavedEditor: () => savedEnv.EDITOR || savedEnv.VISUAL,
+		beginManualRound,
+		prepareForReview,
+		advanceCommit,
+		isRunning,
 	});
 
 	// ── Transitions ─────────────────────────────────────
