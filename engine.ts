@@ -5,7 +5,6 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { LoopMode, LoopState } from "./types.js";
-import type { ManualEngineAPI, ManualSessionInit } from "./manual.js";
 
 type Verdict = "approved" | "changes_requested" | null;
 import { newState } from "./types.js";
@@ -440,7 +439,12 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	// ── Manual mode support ─────────────────────
 
 	/** Semantic session init for manual mode. Engine handles all state internals. */
-	function initManualSession(init: ManualSessionInit, ctx: any): { originalEditor: string | undefined } {
+	function initManualSession(init: {
+		focus: string; initialRequest: string; contextPaths: string[];
+		maxRounds: number; loopStartedAt: number;
+		commitList?: string[]; currentCommitIdx?: number; anchorEntryId?: string;
+		pauseTimer?: boolean; onApproved?(ctx: any): void;
+	}, ctx: any): { originalEditor: string | undefined } {
 		loopCommandCtx = ctx;
 		state = newState({
 			mode: "manual",
@@ -492,25 +496,13 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		await startWorkhorse(overseerText, ctx);
 	}
 
-	const manualEngine: ManualEngineAPI = {
+	const manual = createManualMode({
 		pi,
-		get isIdle() { return state.phase === "idle"; },
-		get phase() { return state.phase; },
-		get commitList() { return state.commitList; },
-		get currentCommitIdx() { return state.currentCommitIdx; },
-		initManualSession,
+		get state() { return state; },
+		initSession: initManualSession,
 		stopLoop,
-		awaitFeedback() { state.phase = "awaiting_feedback"; },
-		advanceCommit() {
-			if (state.currentCommitIdx >= state.commitList.length - 1) return false;
-			state.currentCommitIdx++;
-			return true;
-		},
-		cachePlannotator(v: boolean) { state.hasPlannotator = v; },
 		beginInnerRound,
-	};
-
-	const manual = createManualMode(manualEngine);
+	});
 
 	// ── Transitions ─────────────────────────────────────
 
