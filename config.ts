@@ -3,7 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import type { ReviewMode } from "./types.js";
 
-export type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
+type ThinkingLevel = "off" | "low" | "medium" | "high" | "xhigh";
 
 export interface Config {
 	overseerModel: string;

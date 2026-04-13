@@ -8,7 +8,7 @@ function sanitize(text: string): string {
 }
 import type { LoopMode, ReviewMode } from "./types.js";
 
-export interface OverseerPromptParams {
+interface OverseerPromptParams {
 	focus: string;
 	round: number;
 	reviewMode: ReviewMode;
@@ -20,7 +20,7 @@ export interface OverseerPromptParams {
 	commitSha?: string;
 }
 
-export interface PromptSet {
+interface PromptSet {
 	buildOverseerPrompt(p: OverseerPromptParams): string;
 	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string;
 }
