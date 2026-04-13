@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
-import { createEngine, type Engine } from "./engine.js";
+import { createEngine } from "./engine.js";
 import { showLog } from "./log-view.js";
 import { seedDemoRounds } from "./demo.js";
 

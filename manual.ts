@@ -1,10 +1,12 @@
 /**
  * Manual review mode — commit-by-commit review driven by the user.
- * Owns: commit selection, editor review, plannotator integration.
- * Engine owns: loop lifecycle, timing, status, model switching, state.
+ * Owns: session construction, commit selection, editor review, inner-round
+ * kickoff, status display, plannotator integration, COMMIT prefix protocol.
+ * Engine owns: loop lifecycle, timing, model switching, navigation, state.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { LoopState } from "./engine.js";
 import { loadConfig } from "./config.js";
 import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
@@ -12,46 +14,108 @@ import { execSync } from "node:child_process";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
-/** Narrow engine interface — manual never touches lifecycle state directly. */
-interface ManualEngine {
+/** Engine primitives — manual composes these into manual-specific flows. */
+interface ManualDeps {
 	pi: ExtensionAPI;
-	/** Set up manual session. Returns null if loop already running. */
-	initSession(init: SessionInit, ctx: any): { originalEditor: string | undefined; commitIndex: number } | null;
-	/** Stop the loop. Safe to call when already idle. */
+	initLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
+		pauseTimer?: boolean;
+		hooks?: {
+			onApproved?(ctx: any): void;
+			onChangesRequested?(text: string, ctx: any): void;
+			suppressRoundIncrement?: boolean;
+			suppressLogs?: boolean;
+		};
+	}): boolean;
 	stopLoop(ctx: any): Promise<void>;
-	/** Reset inner-round state and kick off the workhorse. */
-	beginInnerRound(feedback: string, ctx: any): Promise<void>;
-	/** Get current commit info for the review loop. */
-	getCommitInfo(): { sha: string | undefined; index: number; total: number };
-	/** Advance to next commit. Returns false if already at the last one. */
-	advanceCommit(): boolean;
-	/** Set the engine phase (e.g. to awaiting_feedback). */
-	setPhase(phase: "awaiting_feedback"): void;
+	navigateToAnchor(ctx: any): Promise<boolean>;
+	startWorkhorse(text: string, ctx: any): Promise<void>;
+	pauseTimer(): void;
+	resumeTimer(): void;
+	getState(): LoopState;
+	getSavedEditorEnv(): Record<string, string | undefined>;
+	modelToStr(model: any): string;
+	setStatusPrefix(prefix: string): void;
 }
 
-interface SessionInit {
-	focus: string;
-	initialRequest: string;
-	contextPaths: string[];
-	maxRounds: number;
-	loopStartedAt: number;
-	commitList?: string[];
-	currentCommitIdx?: number;
-	anchorEntryId?: string;
-	pauseTimer?: boolean;
-	onApproved?(ctx: any): void;
-}
-
-export function createManualMode(engine: ManualEngine) {
+export function createManualMode(engine: ManualDeps) {
 	let originalEditor: string | undefined;
 	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
 	if (engine.pi.events?.on) {
 		engine.pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
 	}
 
+	// ── Session construction (manual-specific) ──────
+
+	function initManualSession(init: {
+		focus: string; initialRequest: string; contextPaths: string[];
+		maxRounds: number; loopStartedAt: number;
+		commitList?: string[]; currentCommitIdx?: number; anchorEntryId?: string;
+		pauseTimer?: boolean; onApproved?(ctx: any): void;
+	}, ctx: any): boolean {
+		const ok = engine.initLoop({
+			mode: "manual",
+			phase: "awaiting_feedback",
+			round: 0,
+			reviewMode: "incremental",
+			focus: init.focus,
+			initialRequest: init.initialRequest,
+			contextPaths: init.contextPaths,
+			maxRounds: init.maxRounds,
+			loopStartedAt: init.loopStartedAt,
+			commitList: init.commitList ?? [],
+			currentCommitIdx: init.currentCommitIdx ?? 0,
+			anchorEntryId: init.anchorEntryId ?? null,
+			originalModelStr: engine.modelToStr(ctx.model),
+			originalThinking: engine.pi.getThinkingLevel(),
+		}, ctx, {
+			pauseTimer: init.pauseTimer,
+			hooks: {
+				onApproved(innerCtx: any) {
+					engine.pauseTimer();
+					if (init.onApproved) init.onApproved(innerCtx);
+				},
+				onChangesRequested() { engine.getState().round++; },
+				suppressRoundIncrement: true,
+				suppressLogs: true,
+			},
+		});
+		if (!ok) return false;
+		const env = engine.getSavedEditorEnv();
+		originalEditor = env.EDITOR || env.VISUAL;
+		return true;
+	}
+
+	// ── Inner-round kickoff (manual-specific) ───────
+
+	async function beginInnerRound(feedback: string, ctx: any): Promise<void> {
+		engine.resumeTimer();
+		const state = engine.getState();
+		state.userFeedback = feedback;
+		state.round = 1;
+		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
+		state.roundStartedAt = Date.now();
+
+		// COMMIT prefix protocol — manual-specific framing
+		const sha = state.commitList[state.currentCommitIdx];
+		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
+
+		if (!await engine.navigateToAnchor(ctx)) return;
+		await engine.startWorkhorse(overseerText, ctx);
+	}
+
+	// ── Status display (manual-specific) ────────────
+
+	function updateManualStatus(): void {
+		const state = engine.getState();
+		if (state.commitList.length > 0) {
+			const sha = state.commitList[state.currentCommitIdx];
+			if (sha) engine.setStatusPrefix(`Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`);
+		}
+	}
+
 	// ── Plannotator integration ─────────────────────
 
-	// Local cache, reset on each start().
 	let plannotatorAvailable: boolean | null = null;
 
 	function detectPlannotator(cwd?: string): boolean {
@@ -98,27 +162,30 @@ export function createManualMode(engine: ManualEngine) {
 
 	// ── Commit review UI ────────────────────────────
 
-	/** Drive the commit-review loop: iterate commits, call reviewFn, stop or start inner round. */
 	async function reviewCommitLoop(ctx: any): Promise<void> {
 		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
 
 		while (true) {
-			engine.setPhase("awaiting_feedback");
-			const info = engine.getCommitInfo();
-			if (!info.sha) { await engine.stopLoop(ctx); return; }
+			const state = engine.getState();
+			state.phase = "awaiting_feedback";
+			updateManualStatus();
 
-			const result = reviewFn(info.sha, ctx.cwd, originalEditor);
+			const sha = state.commitList[state.currentCommitIdx];
+			if (!sha) { await engine.stopLoop(ctx); return; }
+
+			const result = reviewFn(sha, ctx.cwd, originalEditor);
 
 			if (result.approved) {
-				if (!engine.advanceCommit()) {
-					ctx.ui.notify(`All ${info.total} commit(s) approved`, "success");
+				if (state.currentCommitIdx >= state.commitList.length - 1) {
+					ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
 					await engine.stopLoop(ctx);
 					return;
 				}
+				state.currentCommitIdx++;
 				continue;
 			}
 
-			await engine.beginInnerRound(result.feedback, ctx);
+			await beginInnerRound(result.feedback, ctx);
 			return;
 		}
 	}
@@ -168,21 +235,19 @@ export function createManualMode(engine: ManualEngine) {
 	// ── Entry points ────────────────────────────────
 
 	async function start(args: string, ctx: any): Promise<void> {
-		plannotatorAvailable = null; // Reset cache each time manual mode starts
+		plannotatorAvailable = null;
 		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
 
 		// Plannotator: delegate everything (commit selection, diff, annotation)
 		if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
-			const result0 = engine.initSession({
+			if (!initManualSession({
 				focus: "manual review", initialRequest: "manual review",
 				contextPaths: [], maxRounds: cfg.maxRounds,
 				loopStartedAt: Date.now(),
 				onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
-			}, ctx);
-			if (!result0) return; // already running
-			originalEditor = result0.originalEditor;
+			}, ctx)) return;
 			ctx.ui.notify("Opening plannotator...", "info");
 			const result = await openPlannotator(ctx);
 			if (!result || result.approved) {
@@ -191,7 +256,7 @@ export function createManualMode(engine: ManualEngine) {
 				return;
 			}
 			if (result.feedback) {
-				await engine.beginInnerRound(result.feedback, ctx);
+				await beginInnerRound(result.feedback, ctx);
 			}
 			return;
 		}
@@ -211,7 +276,7 @@ export function createManualMode(engine: ManualEngine) {
 			commit = resolved.commit;
 		}
 
-		const result = engine.initSession({
+		if (!initManualSession({
 			focus: `manual review: ${commit.slice(0, 7)}`,
 			initialRequest: `manual review: ${commit.slice(0, 7)}`,
 			contextPaths: [], maxRounds: cfg.maxRounds,
@@ -219,15 +284,13 @@ export function createManualMode(engine: ManualEngine) {
 			commitList: [commit], currentCommitIdx: 0,
 			pauseTimer: true,
 			onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
-		}, ctx);
-		if (!result) return; // already running
-		originalEditor = result.originalEditor;
+		}, ctx)) return;
 
 		await reviewCommitLoop(ctx);
 	}
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
-		plannotatorAvailable = null; // Force fresh probe — prior session's cache is stale
+		plannotatorAvailable = null;
 		ctx.cwd = anchor.data.cwd || git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];
@@ -242,7 +305,7 @@ export function createManualMode(engine: ManualEngine) {
 					return;
 				}
 			}
-			const result = engine.initSession({
+			if (!initManualSession({
 				focus: anchor.data.focus ?? `manual review: ${commits.length} commit(s)`,
 				initialRequest: anchor.data.initialRequest ?? `manual review: ${commits.length} commit(s)`,
 				contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
@@ -252,10 +315,9 @@ export function createManualMode(engine: ManualEngine) {
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
 				onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
-			}, ctx);
-			if (!result) return;
-			originalEditor = result.originalEditor;
-			ctx.ui.notify(`Resuming manual review — commit ${result.commitIndex + 1}/${commits.length}`, "info");
+			}, ctx)) return;
+			const state = engine.getState();
+			ctx.ui.notify(`Resuming manual review — commit ${state.currentCommitIdx + 1}/${commits.length}`, "info");
 			await reviewCommitLoop(ctx);
 			return;
 		}
@@ -265,7 +327,7 @@ export function createManualMode(engine: ManualEngine) {
 			ctx.ui.notify("Plannotator is no longer available — cannot resume", "error");
 			return;
 		}
-		const result0 = engine.initSession({
+		if (!initManualSession({
 			focus: anchor.data.focus ?? "manual review",
 			initialRequest: anchor.data.initialRequest ?? "manual review",
 			contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
@@ -273,9 +335,7 @@ export function createManualMode(engine: ManualEngine) {
 			anchorEntryId: anchor.id,
 			loopStartedAt: Date.now(),
 			onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
-		}, ctx);
-		if (!result0) return;
-		originalEditor = result0.originalEditor;
+		}, ctx)) return;
 		ctx.ui.notify("Resuming manual review...", "info");
 		const result = await openPlannotator(ctx);
 		if (!result || result.approved) {
@@ -284,7 +344,7 @@ export function createManualMode(engine: ManualEngine) {
 			return;
 		}
 		if (result.feedback) {
-			await engine.beginInnerRound(result.feedback, ctx);
+			await beginInnerRound(result.feedback, ctx);
 		}
 	}
 

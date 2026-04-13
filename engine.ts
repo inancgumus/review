@@ -59,7 +59,7 @@ export interface LoopState {
 	pausedElapsed: number;
 }
 
-export function newState(overrides: Partial<LoopState> = {}): LoopState {
+function newState(overrides: Partial<LoopState> = {}): LoopState {
 	return {
 		mode: "review",
 		phase: "idle",
@@ -363,8 +363,9 @@ export interface Engine {
 	stop(ctx: any): Promise<void>;
 	resume(ctx: any): Promise<void>;
 	onAgentEnd(event: any, ctx: any): void;
-	state: LoopState;
+	readonly state: LoopState;
 	startManual(args: string, ctx: any): Promise<void>;
+	resetState(overrides?: Partial<LoopState>): void;
 }
 
 export function createEngine(pi: ExtensionAPI): Engine {
@@ -383,12 +384,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	function updateStatus(ctx: any): void {
 		if (state.phase === "idle") return;
 		const now = Date.now();
-		// Auto-generate manual mode prefix from state when awaiting feedback
-		let prefix = statusPrefix;
-		if (state.mode === "manual" && state.phase === "awaiting_feedback" && state.commitList.length > 0) {
-			const sha = state.commitList[state.currentCommitIdx];
-			if (sha) prefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
-		}
+		const prefix = statusPrefix;
 		if (!prefix) return;
 		let status = prefix;
 		if (state.roundStartedAt) status += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
@@ -498,83 +494,48 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Manual mode support ─────────────────────
+	// ── Manual mode ─────────────────────────────
 
-	/** Semantic session init for manual mode. Returns null if already running. */
-	function initManualSession(init: {
-		focus: string; initialRequest: string; contextPaths: string[];
-		maxRounds: number; loopStartedAt: number;
-		commitList?: string[]; currentCommitIdx?: number; anchorEntryId?: string;
-		pauseTimer?: boolean; onApproved?(ctx: any): void;
-	}, ctx: any): { originalEditor: string | undefined; commitIndex: number } | null {
-		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return null; }
+	/** Generic session init — sets state, ctx, anchor, editors, timers, hooks. */
+	function initLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
+		pauseTimer?: boolean;
+		hooks?: {
+			onApproved?(ctx: any): void;
+			onChangesRequested?(text: string, ctx: any): void;
+			suppressRoundIncrement?: boolean;
+			suppressLogs?: boolean;
+		};
+	}): boolean {
+		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
 		loopCommandCtx = ctx;
-		state = newState({
-			mode: "manual",
-			phase: "awaiting_feedback",
-			round: 0,
-			reviewMode: "incremental",
-			focus: init.focus,
-			initialRequest: init.initialRequest,
-			contextPaths: init.contextPaths,
-			maxRounds: init.maxRounds,
-			loopStartedAt: init.loopStartedAt,
-			commitList: init.commitList ?? [],
-			currentCommitIdx: init.currentCommitIdx ?? 0,
-			anchorEntryId: init.anchorEntryId ?? null,
-			originalModelStr: modelToStr(ctx.model),
-			originalThinking: pi.getThinkingLevel(),
-		});
+		state = newState(overrides);
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
-		if (init.pauseTimer) pauseTimer();
+		if (opts?.pauseTimer) pauseTimer();
 		startStatusTimer(ctx);
-		// Engine owns the hook protocol — manual provides semantic callbacks
-		modeHooks = {
-			onApproved(innerCtx: any) {
-				pauseTimer();
-				if (init.onApproved) init.onApproved(innerCtx);
-			},
-			onChangesRequested() { state.round++; },
-			suppressRoundIncrement: true,
-			suppressLogs: true,
-		};
-		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL, commitIndex: state.currentCommitIdx };
-	}
-
-	/** Reset inner-round state and kick off the workhorse. */
-	async function beginInnerRound(feedback: string, ctx: any): Promise<void> {
-		resumeTimer();
-		state.userFeedback = feedback;
-		state.round = 1;
-		state.workhorseSummaries = [];
-		state.overseerLeafId = null;
-		state.roundStartedAt = Date.now();
-
-		// Build overseer text — engine knows the COMMIT prefix protocol
-		const sha = state.commitList[state.currentCommitIdx];
-		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
-
-		if (!await navigateToAnchor(ctx)) return;
-		await startWorkhorse(overseerText, ctx);
+		if (opts?.hooks) {
+			modeHooks = {
+				onApproved: opts.hooks.onApproved,
+				onChangesRequested: opts.hooks.onChangesRequested,
+				suppressRoundIncrement: opts.hooks.suppressRoundIncrement,
+				suppressLogs: opts.hooks.suppressLogs,
+			};
+		}
+		return true;
 	}
 
 	const manual = createManualMode({
 		pi,
-		initSession: initManualSession,
+		initLoop,
 		stopLoop,
-		beginInnerRound,
-		getCommitInfo: () => ({
-			sha: state.commitList[state.currentCommitIdx],
-			index: state.currentCommitIdx,
-			total: state.commitList.length,
-		}),
-		advanceCommit: () => {
-			if (state.currentCommitIdx >= state.commitList.length - 1) return false;
-			state.currentCommitIdx++;
-			return true;
-		},
-		setPhase: (phase) => { state.phase = phase; },
+		navigateToAnchor,
+		startWorkhorse,
+		pauseTimer,
+		resumeTimer,
+		getState: () => state,
+		getSavedEditorEnv: () => savedEnv,
+		modelToStr,
+		setStatusPrefix: (s: string) => { statusPrefix = s; },
 	});
 
 	// ── Transitions ─────────────────────────────────────
@@ -861,11 +822,11 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	return {
 		get state() { return state; },
-		set state(s: LoopState) { state = s; },
 		start: startLoop,
 		stop: stopLoop,
 		resume: resumeLoop,
 		onAgentEnd,
 		startManual: manual.start,
+		resetState: (overrides?: Partial<LoopState>) => { state = newState(overrides); },
 	};
 }

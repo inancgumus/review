@@ -1,7 +1,7 @@
 /** Demo data for /loop:debug — kept separate to avoid inflating engine or index. */
 
 import type { RoundResult } from "./types.js";
-import { newState, type Engine } from "./engine.js";
+import type { Engine } from "./engine.js";
 import { V_APPROVED, V_CHANGES } from "./verdicts.js";
 
 const ROUNDS: Array<{ overseer: string; verdict: RoundResult["verdict"]; workhorse: string }> = [
@@ -45,7 +45,7 @@ export function seedDemoRounds(engine: Engine): void {
 		cursor += durations[i];
 	}
 
-	engine.state = newState({
+	engine.resetState({
 		initialRequest: "fix race condition in connection handler @internal/server/conn.go",
 		loopStartedAt: now - elapsed,
 		roundResults: results,
