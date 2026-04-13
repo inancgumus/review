@@ -870,3 +870,35 @@ test("plannotator path round 2: workhorse uses fallback when no COMMIT prefix", 
 		repo.cleanup();
 	}
 });
+
+test("plannotator path: /loop:resume does not enter commit-based resume with empty commitList", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+
+		// Mock plannotator
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				// Plannotator approves immediately
+				req.respond({ status: "handled", result: { approved: true } });
+			}
+		});
+
+		// Start plannotator manual mode — approves immediately, loop stops
+		await h.commands.get("loop:manual")!("", h.ctx);
+
+		// Now try to resume — should NOT enter commit-based resume
+		await h.commands.get("loop:resume")!("", h.ctx);
+
+		// Should not show "commit 1/0" — check notifications
+		const allNotifs = h.notifications.map(n => n.message).join(" ");
+		assert.doesNotMatch(allNotifs, /commit 1\/0/, "should not show commit 1/0");
+		assert.doesNotMatch(allNotifs, /Resuming manual review/, "should not resume as manual commit review");
+	} finally {
+		repo.cleanup();
+	}
+});

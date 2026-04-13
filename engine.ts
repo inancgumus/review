@@ -603,7 +603,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const anchor = findAnchor(ctx);
 
 		// Manual mode resume
-		if (anchor?.data?.mode === "manual" && Array.isArray(anchor.data.commitList)) {
+		if (anchor?.data?.mode === "manual" && Array.isArray(anchor.data.commitList) && anchor.data.commitList.length > 0) {
 			const commits: string[] = anchor.data.commitList;
 			for (const sha of commits) {
 				try {
