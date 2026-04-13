@@ -2,11 +2,9 @@ export type LoopMode = "review" | "exec" | "manual";
 
 export type ReviewMode = "fresh" | "incremental";
 
-export type Verdict = "approved" | "changes_requested" | null;
-
 export interface RoundResult {
 	round: number;
-	verdict: Verdict;
+	verdict: "approved" | "changes_requested" | null;
 	overseerText: string;
 	workhorseSummary: string;
 	startedAt: number;
