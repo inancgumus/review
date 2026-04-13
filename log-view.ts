@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RoundResult } from "./types.js";
-import { VERDICT_STRIP_RE } from "./verdicts.js";
+const VERDICT_STRIP_RE = /\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}(APPROVED|CHANGES_REQUESTED)\*{0,2}/gi;
 
 // ── Runtime loading (absorbed from tui-runtime.ts) ──────
 

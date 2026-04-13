@@ -7,7 +7,9 @@ function sanitize(text: string): string {
 	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
 }
 import type { LoopMode, PromptSet, OverseerPromptParams } from "./types.js";
-import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, CHANGES_STRIP_RE } from "./verdicts.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
+
+const CHANGES_STRIP_RE = /VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi;
 
 // ── Context path helpers ────────────────────────────────
 
