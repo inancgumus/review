@@ -21,10 +21,8 @@ interface ManualEngine {
 	stopLoop(ctx: any): Promise<void>;
 	/** Reset inner-round state and kick off the workhorse. */
 	beginInnerRound(feedback: string, ctx: any): Promise<void>;
-	/** Enter awaiting_feedback phase and return current commit. Null = no commit (plannotator path). */
-	prepareCommitReview(): { sha: string; index: number; total: number } | null;
-	/** Current commit approved. Advances index, stops if last. Returns true if more to review. */
-	approveCommit(ctx: any): Promise<boolean>;
+	/** Drive commit-review loop: cycles through commits, calls reviewFn, stops or starts inner round. */
+	reviewNextCommit(reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string }, ctx: any, originalEditor?: string): Promise<void>;
 }
 
 interface SessionInit {
@@ -98,21 +96,7 @@ export function createManualMode(engine: ManualEngine) {
 
 	async function showCommitForReview(ctx: any): Promise<void> {
 		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
-
-		while (true) {
-			const info = engine.prepareCommitReview();
-			if (!info) { await engine.stopLoop(ctx); return; }
-
-			const result = reviewFn(info.sha, ctx.cwd, originalEditor);
-
-			if (result.approved) {
-				if (!await engine.approveCommit(ctx)) return;
-				continue;
-			}
-
-			await engine.beginInnerRound(result.feedback, ctx);
-			return;
-		}
+		await engine.reviewNextCommit(reviewFn, ctx, originalEditor);
 	}
 
 	async function afterInnerLoop(ctx: any): Promise<void> {

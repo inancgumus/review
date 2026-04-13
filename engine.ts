@@ -57,7 +57,6 @@ export interface LoopState {
 	currentCommitIdx: number;
 	userFeedback: string;
 	pausedElapsed: number;
-	hasPlannotator?: boolean | null;
 }
 
 export function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -560,23 +559,32 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		await startWorkhorse(overseerText, ctx);
 	}
 
-	/** Enter awaiting_feedback phase and return current commit info. */
-	function prepareCommitReview(): { sha: string; index: number; total: number } | null {
-		state.phase = "awaiting_feedback";
-		const sha = state.commitList[state.currentCommitIdx];
-		if (!sha) return null;
-		return { sha, index: state.currentCommitIdx, total: state.commitList.length };
-	}
+	/** Drive the commit-review loop: cycles through commits, calls reviewFn per commit, stops or starts inner round. */
+	async function reviewNextCommit(
+		reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string },
+		ctx: any,
+		originalEditor?: string,
+	): Promise<void> {
+		while (true) {
+			state.phase = "awaiting_feedback";
+			const sha = state.commitList[state.currentCommitIdx];
+			if (!sha) { await stopLoop(ctx); return; }
 
-	/** Current commit approved. Advances index, stops if last. */
-	async function approveCommit(ctx: any): Promise<boolean> {
-		if (state.currentCommitIdx >= state.commitList.length - 1) {
-			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-			await stopLoop(ctx);
-			return false;
+			const result = reviewFn(sha, ctx.cwd, originalEditor);
+
+			if (result.approved) {
+				if (state.currentCommitIdx >= state.commitList.length - 1) {
+					ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+					await stopLoop(ctx);
+					return;
+				}
+				state.currentCommitIdx++;
+				continue;
+			}
+
+			await beginInnerRound(result.feedback, ctx);
+			return;
 		}
-		state.currentCommitIdx++;
-		return true;
 	}
 
 	const manual = createManualMode({
@@ -584,8 +592,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		initSession: initManualSession,
 		stopLoop,
 		beginInnerRound,
-		prepareCommitReview,
-		approveCommit,
+		reviewNextCommit,
 	});
 
 	// ── Transitions ─────────────────────────────────────
