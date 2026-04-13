@@ -13,7 +13,7 @@ import { execSync } from "node:child_process";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
-/** Narrow interface — engine internals stay hidden behind these ~8 methods. */
+/** Narrow interface — manual.ts only knows these high-level engine operations. */
 interface ManualDeps {
 	pi: ExtensionAPI;
 	engine: {
@@ -21,11 +21,6 @@ interface ManualDeps {
 		prepareLoop(overrides: Partial<LoopState>, ctx: any, hooks: ModeHooks, opts?: { pauseTimer?: boolean }): { originalEditor: string | undefined };
 		stopLoop(ctx: any): Promise<void>;
 		startWorkhorse(text: string, ctx: any): Promise<void>;
-		log(text: string): void;
-		getOriginalEditor(): string | undefined;
-		setStatus(prefix: string, ctx: any): void;
-		pauseTimer(): void;
-		resumeTimer(): void;
 	};
 }
 
@@ -35,6 +30,7 @@ interface ManualMode {
 }
 
 export function createManualMode(deps: ManualDeps): ManualMode {
+	let originalEditor: string | undefined;
 	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
 	if (deps.pi.events?.on) {
 		deps.pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
@@ -106,11 +102,8 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			state.phase = "awaiting_feedback";
 			const sha = state.commitList[state.currentCommitIdx];
 			if (!sha) { await deps.engine.stopLoop(ctx); return; }
-			const shortSha = sha.slice(0, 7);
-			deps.engine.setStatus(`Manual: ${shortSha} (${state.currentCommitIdx + 1}/${state.commitList.length})`, ctx);
 
-			const origEditor = deps.engine.getOriginalEditor();
-			const result = reviewFn(sha, ctx.cwd, origEditor);
+			const result = reviewFn(sha, ctx.cwd, originalEditor);
 
 			if (result.approved) {
 				if (!await advanceCommit(ctx)) return;
@@ -155,6 +148,11 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	}
 
 	// ── Commit resolution ───────────────────────────
+
+	function prepare(overrides: Partial<LoopState>, ctx: any, opts?: { pauseTimer?: boolean }): void {
+		const result = deps.engine.prepareLoop(overrides, ctx, buildModeHooks(), opts);
+		originalEditor = result.originalEditor;
+	}
 
 	function resolveCommit(sha: string, cwd: string): { commit: string; base: string } | null {
 		let commit: string;
@@ -202,12 +200,12 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 
 		// Plannotator: delegate everything (commit selection, diff, annotation)
 		if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
-			deps.engine.prepareLoop({
+			prepare({
 				mode: "manual", phase: "awaiting_feedback", round: 0,
 				focus: "manual review", initialRequest: "manual review",
 				contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
 				loopStartedAt: Date.now(),
-			}, ctx, buildModeHooks());
+			}, ctx);
 			ctx.ui.notify("Opening plannotator...", "info");
 			const result = await openPlannotator(ctx);
 			if (!result || result.approved) {
@@ -236,14 +234,14 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			commit = resolved.commit;
 		}
 
-		deps.engine.prepareLoop({
+		prepare({
 			mode: "manual", phase: "awaiting_feedback", round: 0,
 			focus: `manual review: ${commit.slice(0, 7)}`,
 			initialRequest: `manual review: ${commit.slice(0, 7)}`,
 			contextPaths: [], maxRounds: cfg.maxRounds, reviewMode: "incremental",
 			loopStartedAt: Date.now(),
 			commitList: [commit], currentCommitIdx: 0,
-		}, ctx, buildModeHooks(), { pauseTimer: true });
+		}, ctx, { pauseTimer: true });
 
 		await showCommitForReview(ctx);
 	}
@@ -263,7 +261,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 					return;
 				}
 			}
-			deps.engine.prepareLoop({
+			prepare({
 				mode: "manual",
 				phase: "awaiting_feedback",
 				reviewMode: "incremental",
@@ -275,7 +273,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 				loopStartedAt: Date.now(),
 				commitList: commits,
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-			}, ctx, buildModeHooks());
+			}, ctx);
 			ctx.ui.notify(`Resuming manual review — commit ${deps.engine.state.currentCommitIdx + 1}/${commits.length}`, "info");
 			await showCommitForReview(ctx);
 			return;
@@ -286,7 +284,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			ctx.ui.notify("Plannotator is no longer available — cannot resume", "error");
 			return;
 		}
-		deps.engine.prepareLoop({
+		prepare({
 			mode: "manual",
 			phase: "awaiting_feedback",
 			reviewMode: "incremental",
@@ -296,7 +294,7 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 			maxRounds: cfg.maxRounds,
 			anchorEntryId: anchor.id,
 			loopStartedAt: Date.now(),
-		}, ctx, buildModeHooks());
+		}, ctx);
 		ctx.ui.notify("Resuming manual review...", "info");
 		const result = await openPlannotator(ctx);
 		if (!result || result.approved) {

@@ -309,9 +309,16 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	}
 
 	function updateStatus(ctx: any): void {
-		if (state.phase === "idle" || !statusPrefix) return;
+		if (state.phase === "idle") return;
 		const now = Date.now();
-		let status = statusPrefix;
+		// Auto-generate manual mode prefix from state when awaiting feedback
+		let prefix = statusPrefix;
+		if (state.mode === "manual" && state.phase === "awaiting_feedback" && state.commitList.length > 0) {
+			const sha = state.commitList[state.currentCommitIdx];
+			if (sha) prefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
+		}
+		if (!prefix) return;
+		let status = prefix;
 		if (state.roundStartedAt) status += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
 		if (state.loopStartedAt) {
 			if (state.phase === "awaiting_feedback") {
@@ -439,19 +446,11 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL };
 	}
 
-	/** Update status bar with a manual-mode prefix. */
-	function setStatus(prefix: string, ctx: any): void {
-		statusPrefix = prefix;
-		updateStatus(ctx);
-	}
-
 	const manual = createManualMode({
 		pi,
 		engine: {
 			get state() { return state; },
-			prepareLoop, stopLoop, startWorkhorse, log,
-			getOriginalEditor: () => savedEnv.EDITOR || savedEnv.VISUAL,
-			setStatus, pauseTimer, resumeTimer,
+			prepareLoop, stopLoop, startWorkhorse,
 		},
 	});
 
