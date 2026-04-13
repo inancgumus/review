@@ -438,13 +438,14 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	// ── Manual mode support ─────────────────────
 
-	/** Semantic session init for manual mode. Engine handles all state internals. */
+	/** Semantic session init for manual mode. Returns null if already running. */
 	function initManualSession(init: {
 		focus: string; initialRequest: string; contextPaths: string[];
 		maxRounds: number; loopStartedAt: number;
 		commitList?: string[]; currentCommitIdx?: number; anchorEntryId?: string;
 		pauseTimer?: boolean; onApproved?(ctx: any): void;
-	}, ctx: any): { originalEditor: string | undefined } {
+	}, ctx: any): { originalEditor: string | undefined; commitIndex: number } | null {
+		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return null; }
 		loopCommandCtx = ctx;
 		state = newState({
 			mode: "manual",
@@ -476,7 +477,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			suppressRoundIncrement: true,
 			suppressLogs: true,
 		};
-		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+		return { originalEditor: savedEnv.EDITOR || savedEnv.VISUAL, commitIndex: state.currentCommitIdx };
 	}
 
 	/** Reset inner-round state and kick off the workhorse. */
@@ -496,29 +497,32 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		await startWorkhorse(overseerText, ctx);
 	}
 
+	/** Enter awaiting_feedback phase and return current commit info. */
+	function prepareCommitReview(): { sha: string; index: number; total: number } | null {
+		state.phase = "awaiting_feedback";
+		const sha = state.commitList[state.currentCommitIdx];
+		if (!sha) return null;
+		return { sha, index: state.currentCommitIdx, total: state.commitList.length };
+	}
+
+	/** Current commit approved. Advances index, stops if last. */
+	async function approveCommit(ctx: any): Promise<boolean> {
+		if (state.currentCommitIdx >= state.commitList.length - 1) {
+			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+			await stopLoop(ctx);
+			return false;
+		}
+		state.currentCommitIdx++;
+		return true;
+	}
+
 	const manual = createManualMode({
 		pi,
-		getCommitInfo() {
-			const sha = state.commitList[state.currentCommitIdx];
-			if (!sha) return null;
-			return { sha, index: state.currentCommitIdx, total: state.commitList.length };
-		},
-		async advanceCommit(ctx: any) {
-			if (state.currentCommitIdx >= state.commitList.length - 1) {
-				ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-				await stopLoop(ctx);
-				return false;
-			}
-			state.currentCommitIdx++;
-			return true;
-		},
-		setAwaitingFeedback() { state.phase = "awaiting_feedback"; },
-		isIdle() { return state.phase === "idle"; },
-		isRunning() { return state.phase !== "idle"; },
-		getCurrentCommitIdx() { return state.currentCommitIdx; },
 		initSession: initManualSession,
 		stopLoop,
 		beginInnerRound,
+		prepareCommitReview,
+		approveCommit,
 	});
 
 	// ── Transitions ─────────────────────────────────────

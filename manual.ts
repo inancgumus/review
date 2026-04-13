@@ -15,21 +15,16 @@ const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "p
 /** Narrow engine interface — manual never touches lifecycle state directly. */
 interface ManualEngine {
 	pi: ExtensionAPI;
-	/** Read-only commit view for the review UI. */
-	getCommitInfo(): { sha: string; index: number; total: number } | null;
-	/** Advance to next commit. Returns false if no more commits. */
-	advanceCommit(ctx: any): Promise<boolean>;
-	/** Transition engine to awaiting_feedback phase. */
-	setAwaitingFeedback(): void;
-	/** Check if engine is idle (stopped). */
-	isIdle(): boolean;
-	/** Check if engine is already running. */
-	isRunning(): boolean;
-	/** Read currentCommitIdx for resume notification. */
-	getCurrentCommitIdx(): number;
-	initSession(init: SessionInit, ctx: any): { originalEditor: string | undefined };
+	/** Set up manual session. Returns null if loop already running. */
+	initSession(init: SessionInit, ctx: any): { originalEditor: string | undefined; commitIndex: number } | null;
+	/** Stop the loop. Safe to call when already idle. */
 	stopLoop(ctx: any): Promise<void>;
+	/** Reset inner-round state and kick off the workhorse. */
 	beginInnerRound(feedback: string, ctx: any): Promise<void>;
+	/** Enter awaiting_feedback phase and return current commit. Null = no commit (plannotator path). */
+	prepareCommitReview(): { sha: string; index: number; total: number } | null;
+	/** Current commit approved. Advances index, stops if last. Returns true if more to review. */
+	approveCommit(ctx: any): Promise<boolean>;
 }
 
 interface SessionInit {
@@ -105,14 +100,13 @@ export function createManualMode(engine: ManualEngine) {
 		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
 
 		while (true) {
-			engine.setAwaitingFeedback();
-			const info = engine.getCommitInfo();
+			const info = engine.prepareCommitReview();
 			if (!info) { await engine.stopLoop(ctx); return; }
 
 			const result = reviewFn(info.sha, ctx.cwd, originalEditor);
 
 			if (result.approved) {
-				if (!await engine.advanceCommit(ctx)) return;
+				if (!await engine.approveCommit(ctx)) return;
 				continue;
 			}
 
@@ -122,7 +116,6 @@ export function createManualMode(engine: ManualEngine) {
 	}
 
 	async function afterInnerLoop(ctx: any): Promise<void> {
-		if (engine.isIdle()) return;
 		await engine.stopLoop(ctx);
 	}
 
@@ -167,7 +160,6 @@ export function createManualMode(engine: ManualEngine) {
 	// ── Entry points ────────────────────────────────
 
 	async function start(args: string, ctx: any): Promise<void> {
-		if (engine.isRunning()) { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return; }
 		plannotatorAvailable = null; // Reset cache each time manual mode starts
 		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
@@ -181,6 +173,7 @@ export function createManualMode(engine: ManualEngine) {
 				loopStartedAt: Date.now(),
 				onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
 			}, ctx);
+			if (!result0) return; // already running
 			originalEditor = result0.originalEditor;
 			ctx.ui.notify("Opening plannotator...", "info");
 			const result = await openPlannotator(ctx);
@@ -219,6 +212,7 @@ export function createManualMode(engine: ManualEngine) {
 			pauseTimer: true,
 			onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
 		}, ctx);
+		if (!result) return; // already running
 		originalEditor = result.originalEditor;
 
 		await showCommitForReview(ctx);
@@ -250,8 +244,9 @@ export function createManualMode(engine: ManualEngine) {
 				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
 				onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
 			}, ctx);
+			if (!result) return;
 			originalEditor = result.originalEditor;
-			ctx.ui.notify(`Resuming manual review — commit ${engine.getCurrentCommitIdx() + 1}/${commits.length}`, "info");
+			ctx.ui.notify(`Resuming manual review — commit ${result.commitIndex + 1}/${commits.length}`, "info");
 			await showCommitForReview(ctx);
 			return;
 		}
@@ -270,6 +265,7 @@ export function createManualMode(engine: ManualEngine) {
 			loopStartedAt: Date.now(),
 			onApproved(innerCtx: any) { void afterInnerLoop(innerCtx); },
 		}, ctx);
+		if (!result0) return;
 		originalEditor = result0.originalEditor;
 		ctx.ui.notify("Resuming manual review...", "info");
 		const result = await openPlannotator(ctx);
