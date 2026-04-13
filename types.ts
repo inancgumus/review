@@ -17,24 +17,6 @@ export interface Config {
 
 export type Phase = "idle" | "reviewing" | "fixing" | "awaiting_feedback";
 
-export interface OverseerPromptParams {
-	focus: string;
-	round: number;
-	reviewMode: ReviewMode;
-	contextPaths: string[];
-	workhorseSummaries: string[];
-	unchangedCommits: string[];
-	changedContextPaths: string[];
-	// Manual mode
-	userFeedback?: string;
-	commitSha?: string;
-}
-
-export interface PromptSet {
-	buildOverseerPrompt(p: OverseerPromptParams): string;
-	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string;
-}
-
 export type Verdict = "approved" | "changes_requested" | null;
 
 export interface RoundResult {

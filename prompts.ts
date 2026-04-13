@@ -6,7 +6,24 @@ import { createHash } from "node:crypto";
 function sanitize(text: string): string {
 	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
 }
-import type { LoopMode, PromptSet, OverseerPromptParams } from "./types.js";
+import type { LoopMode, ReviewMode } from "./types.js";
+
+export interface OverseerPromptParams {
+	focus: string;
+	round: number;
+	reviewMode: ReviewMode;
+	contextPaths: string[];
+	workhorseSummaries: string[];
+	unchangedCommits: string[];
+	changedContextPaths: string[];
+	userFeedback?: string;
+	commitSha?: string;
+}
+
+export interface PromptSet {
+	buildOverseerPrompt(p: OverseerPromptParams): string;
+	buildWorkhorsePrompt(overseerText: string, contextPaths: string[], round: number, opts?: { rewriteHistory?: boolean }): string;
+}
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 
 const CHANGES_STRIP_RE = /VERDICT:\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/gi;
