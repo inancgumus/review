@@ -476,6 +476,7 @@ test("manual overseer prompt says not to add own issues", async () => {
 
 		const overseerPrompt = h.userMessages[h.userMessages.length - 1];
 		assert.match(overseerPrompt, /not.*add.*own issues/i, "says not to add own issues");
+		assert.match(overseerPrompt, /fix error handling/, "overseer round 1 includes user feedback text");
 		await h.stopLoop();
 	} finally {
 		repo.cleanup();
