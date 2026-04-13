@@ -1,8 +1,7 @@
 /** Demo data for /loop:debug — kept separate to avoid inflating engine or index. */
 
 import type { RoundResult } from "./types.js";
-import { newState } from "./types.js";
-import type { Engine } from "./engine.js";
+import { newState, type Engine } from "./engine.js";
 import { V_APPROVED, V_CHANGES } from "./verdicts.js";
 
 const ROUNDS: Array<{ overseer: string; verdict: RoundResult["verdict"]; workhorse: string }> = [

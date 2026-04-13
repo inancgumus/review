@@ -219,6 +219,7 @@ export function createManualMode(engine: ManualEngine) {
 	}
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
+		plannotatorAvailable = null; // Force fresh probe — prior session's cache is stale
 		ctx.cwd = anchor.data.cwd || git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];

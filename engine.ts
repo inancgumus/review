@@ -4,10 +4,9 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { LoopMode, LoopState } from "./types.js";
+import type { LoopMode, ReviewMode, RoundResult } from "./types.js";
 
 type Verdict = "approved" | "changes_requested" | null;
-import { newState } from "./types.js";
 import { loadConfig } from "./config.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -27,6 +26,70 @@ interface ModeHooks {
 	onChangesRequested?(text: string, ctx: any): void;
 	suppressRoundIncrement?: boolean;
 	suppressLogs?: boolean;
+}
+
+// ── Loop state (engine-owned) ───────────────────────
+
+export interface LoopState {
+	mode: LoopMode;
+	phase: "idle" | "reviewing" | "fixing" | "awaiting_feedback";
+	round: number;
+	focus: string;
+	initialRequest: string;
+	contextPaths: string[];
+	maxRounds: number;
+	reviewMode: ReviewMode;
+	originalModelStr: string;
+	originalThinking: string;
+	overseerLeafId: string | null;
+	anchorEntryId: string | null;
+	workhorseSummaries: string[];
+	roundResults: RoundResult[];
+	patchSnapshot: Map<string, string> | null;
+	snapshotBase: string;
+	taggedSubjects: string[];
+	unchangedCommits: string[];
+	contextHashes: Map<string, string> | null;
+	changedContextPaths: string[];
+	loopStartedAt: number;
+	roundStartedAt: number;
+	commitList: string[];
+	currentCommitIdx: number;
+	userFeedback: string;
+	pausedElapsed: number;
+	hasPlannotator?: boolean | null;
+}
+
+export function newState(overrides: Partial<LoopState> = {}): LoopState {
+	return {
+		mode: "review",
+		phase: "idle",
+		round: 0,
+		focus: "",
+		initialRequest: "",
+		contextPaths: [],
+		maxRounds: 10,
+		reviewMode: "fresh",
+		originalModelStr: "",
+		originalThinking: "xhigh",
+		overseerLeafId: null,
+		anchorEntryId: null,
+		workhorseSummaries: [],
+		roundResults: [],
+		patchSnapshot: null,
+		snapshotBase: "",
+		taggedSubjects: [],
+		unchangedCommits: [],
+		contextHashes: null,
+		changedContextPaths: [],
+		loopStartedAt: 0,
+		roundStartedAt: 0,
+		commitList: [],
+		currentCommitIdx: 0,
+		userFeedback: "",
+		pausedElapsed: 0,
+		...overrides,
+	};
 }
 
 // ── Verdict parsing (absorbed from verdicts.ts) ───────

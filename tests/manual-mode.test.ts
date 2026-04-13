@@ -117,7 +117,7 @@ function createHarness(cwdOverride?: string) {
 		if (stop) await stop("", ctx);
 	}
 
-	return { commands, events, ctx, userMessages, selectQueue, selectCalls, inputQueue, reviewResults, stopLoop };
+	return { commands, events, ctx, pi, userMessages, selectQueue, selectCalls, inputQueue, reviewResults, stopLoop };
 }
 
 test("/loop:manual command registers", () => {
@@ -590,6 +590,46 @@ test("/loop:resume with plannotator anchor but no plannotator returns promptly",
 		assert.notEqual(result, "timeout", "resume should not hang when plannotator is unavailable");
 		const all = notifyMsgs.join(" ");
 		assert.ok(all.length > 0, "should notify user about the issue");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:resume with stale plannotator cache does not hang", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+		const notifyMsgs: string[] = [];
+		h.ctx.ui.notify = (msg: string) => { notifyMsgs.push(msg); };
+
+		// Register a plannotator that responds to detection and approves immediately
+		let plannotatorActive = true;
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (!plannotatorActive) return; // simulate plannotator disappearing
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				req.respond({ status: "handled", result: { approved: true } });
+			}
+		});
+
+		// Start a plannotator session — this caches plannotator as available
+		await h.commands.get("loop:manual")!("", h.ctx);
+
+		// Now make plannotator disappear
+		plannotatorActive = false;
+
+		// Resume should detect plannotator is gone, not use stale cache
+		const result = await Promise.race([
+			h.commands.get("loop:resume")!("", h.ctx),
+			new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+		]);
+
+		assert.notEqual(result, "timeout", "resume must not hang with stale plannotator cache");
+		const all = notifyMsgs.join(" ");
+		assert.match(all, /no longer available/i, "should notify plannotator is gone");
 	} finally {
 		repo.cleanup();
 	}
