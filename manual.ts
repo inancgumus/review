@@ -15,7 +15,7 @@ import { execSync } from "node:child_process";
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
 /** High-level engine contract for manual mode. 6 methods, no primitives. */
-export interface ManualEngine {
+interface ManualEngine {
 	pi: ExtensionAPI;
 	/** Set up a manual session: state, hooks, anchor, timers. Returns false if loop already running. */
 	initSession(cfg: ManualSessionConfig, onInnerLoopDone: (ctx: any) => void, ctx: any): boolean;
@@ -31,7 +31,7 @@ export interface ManualEngine {
 	getCommandCtx(): any;
 }
 
-export interface ManualSessionConfig {
+interface ManualSessionConfig {
 	focus: string;
 	initialRequest: string;
 	contextPaths: string[];
