@@ -37,7 +37,7 @@ interface ManualDeps {
 
 interface ManualMode {
 	start(args: string, ctx: any): Promise<void>;
-	resume(ctx: any): Promise<void>;
+	resume(ctx: any, anchor: { id: string; data: any }): Promise<void>;
 	showCommitForReview(ctx: any): Promise<void>;
 	startInnerLoop(feedback: string, ctx: any): Promise<void>;
 	afterInnerLoop(ctx: any): Promise<void>;
@@ -269,9 +269,65 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 		await showCommitForReview(ctx);
 	}
 
-	async function resume(ctx: any): Promise<void> {
-		// Handled by engine's resumeLoop — this is called when anchor has manual mode data
-		await showCommitForReview(ctx);
+	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
+		const cfg = loadConfig(ctx.cwd);
+		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];
+
+		// Commit-backed manual session: verify commits still exist
+		if (commits.length > 0) {
+			for (const sha of commits) {
+				try {
+					execSync(`git cat-file -t ${sha}`, { ...GIT_OPTS, cwd: ctx.cwd });
+				} catch {
+					ctx.ui.notify(`Commit ${sha.slice(0, 7)} no longer exists — cannot resume`, "error");
+					return;
+				}
+			}
+			initManual({
+				mode: "manual",
+				phase: "awaiting_feedback",
+				reviewMode: "incremental",
+				focus: anchor.data.focus ?? `manual review: ${commits.length} commit(s)`,
+				initialRequest: anchor.data.initialRequest ?? `manual review: ${commits.length} commit(s)`,
+				contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
+				maxRounds: cfg.maxRounds,
+				originalModelStr: deps.modelToStr(ctx.model),
+				originalThinking: deps.pi.getThinkingLevel(),
+				anchorEntryId: anchor.id,
+				loopStartedAt: Date.now(),
+				commitList: commits,
+				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
+				manualBase: anchor.data.manualBase ?? "",
+			}, ctx);
+			ctx.ui.notify(`Resuming manual review — commit ${deps.getState().currentCommitIdx + 1}/${commits.length}`, "info");
+			await showCommitForReview(ctx);
+			return;
+		}
+
+		// Plannotator-backed manual session: restore state and re-open plannotator
+		initManual({
+			mode: "manual",
+			phase: "awaiting_feedback",
+			reviewMode: "incremental",
+			focus: anchor.data.focus ?? "manual review",
+			initialRequest: anchor.data.initialRequest ?? "manual review",
+			contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
+			maxRounds: cfg.maxRounds,
+			originalModelStr: deps.modelToStr(ctx.model),
+			originalThinking: deps.pi.getThinkingLevel(),
+			anchorEntryId: anchor.id,
+			loopStartedAt: Date.now(),
+		}, ctx);
+		ctx.ui.notify("Resuming manual review...", "info");
+		const result = await openPlannotator(ctx);
+		if (!result || result.approved) {
+			ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
+			await deps.stopLoop(ctx);
+			return;
+		}
+		if (result.feedback) {
+			await startInnerLoop(result.feedback, ctx);
+		}
 	}
 
 	return { start, resume, showCommitForReview, startInnerLoop, afterInnerLoop };

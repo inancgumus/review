@@ -897,7 +897,44 @@ test("plannotator path: /loop:resume does not enter commit-based resume with emp
 		// Should not show "commit 1/0" — check notifications
 		const allNotifs = h.notifications.map(n => n.message).join(" ");
 		assert.doesNotMatch(allNotifs, /commit 1\/0/, "should not show commit 1/0");
-		assert.doesNotMatch(allNotifs, /Resuming manual review/, "should not resume as manual commit review");
+		assert.doesNotMatch(allNotifs, /Resuming manual review — commit/, "should not enter commit-based resume path");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("plannotator path: /loop:resume resumes active plannotator manual session", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+
+		// Mock plannotator that gives feedback (enters workhorse phase)
+		let plannotatorCalls = 0;
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				plannotatorCalls++;
+				req.respond({ status: "handled", result: { approved: false, feedback: "fix the auth bug" } });
+			}
+		});
+
+		// Start plannotator manual mode — feedback enters workhorse phase
+		await h.commands.get("loop:manual")!("", h.ctx);
+		assert.ok(h.userMessages.length >= 1, "workhorse prompt sent");
+
+		// Stop the loop mid-workhorse
+		await h.stopLoop();
+
+		// Resume — should NOT say "Nothing to resume"
+		h.notifications.length = 0;
+		await h.commands.get("loop:resume")!("", h.ctx);
+
+		const allNotifs = h.notifications.map(n => n.message).join(" ");
+		assert.doesNotMatch(allNotifs, /Nothing to resume/, "should not say nothing to resume");
+		assert.doesNotMatch(allNotifs, /commit 1\/0/, "should not show commit 1/0");
 	} finally {
 		repo.cleanup();
 	}

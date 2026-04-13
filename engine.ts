@@ -602,39 +602,9 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
 		const anchor = findAnchor(ctx);
 
-		// Manual mode resume
-		if (anchor?.data?.mode === "manual" && Array.isArray(anchor.data.commitList) && anchor.data.commitList.length > 0) {
-			const commits: string[] = anchor.data.commitList;
-			for (const sha of commits) {
-				try {
-					execSync(`git cat-file -t ${sha}`, { ...GIT_OPTS, cwd: ctx.cwd });
-				} catch {
-					ctx.ui.notify(`Commit ${sha.slice(0, 7)} no longer exists — cannot resume`, "error");
-					return;
-				}
-			}
-			const cfg = loadConfig(ctx.cwd);
-			loopCommandCtx = ctx;
-			state = newState({
-				mode: "manual",
-				phase: "awaiting_feedback",
-				reviewMode: "incremental",
-				focus: anchor.data.focus ?? `manual review: ${commits.length} commit(s)`,
-				initialRequest: anchor.data.initialRequest ?? `manual review: ${commits.length} commit(s)`,
-				contextPaths: Array.isArray(anchor.data.contextPaths) ? anchor.data.contextPaths : [],
-				maxRounds: cfg.maxRounds,
-				originalModelStr: modelToStr(ctx.model),
-				originalThinking: pi.getThinkingLevel(),
-				anchorEntryId: anchor.id,
-				loopStartedAt: Date.now(),
-				commitList: commits,
-				currentCommitIdx: anchor.data.currentCommitIdx ?? 0,
-				manualBase: anchor.data.manualBase ?? "",
-			});
-			blockInteractiveEditors();
-			startStatusTimer(ctx);
-			ctx.ui.notify(`Resuming manual review — commit ${state.currentCommitIdx + 1}/${commits.length}`, "info");
-			await manual.showCommitForReview(ctx);
+		// Manual mode resume — delegate both commit-backed and plannotator sessions
+		if (anchor?.data?.mode === "manual") {
+			await manual.resume(ctx, anchor);
 			return;
 		}
 
