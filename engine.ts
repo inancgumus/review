@@ -20,10 +20,13 @@ import { execSync } from "node:child_process";
 
 // ── Mode hooks (engine-private, not exported) ────────
 
-/** Engine-internal hook protocol — manual.ts never sees this. */
+/** Engine-internal hook protocol — modes supply behavior, engine dispatches. */
 interface ModeHooks {
 	onApproved?(ctx: any): void;
 	onChangesRequested?(text: string, ctx: any): void;
+	onStop?(ctx: any): void;
+	getAnchorExtras?(): Record<string, any>;
+	getPromptExtras?(): { userFeedback?: string; commitSha?: string };
 	suppressRoundIncrement?: boolean;
 	suppressLogs?: boolean;
 }
@@ -435,14 +438,14 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	}
 
 	function rememberAnchor(ctx: any): void {
+		const extras = modeHooks.getAnchorExtras?.() ?? {};
 		pi.appendEntry("loop-anchor", {
 			focus: state.focus,
 			initialRequest: state.initialRequest,
 			contextPaths: state.contextPaths,
 			mode: state.mode,
 			cwd: ctx.cwd,
-			commitList: state.mode === "manual" ? state.commitList : undefined,
-			currentCommitIdx: state.mode === "manual" ? state.currentCommitIdx : undefined,
+			...extras,
 		});
 		state.anchorEntryId = ctx.sessionManager.getLeafId();
 	}
@@ -523,16 +526,30 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				originalThinking: pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
 			});
+			modeHooks = {
+				onApproved: (innerCtx: any) => { pauseTimer(); onInnerLoopDone(innerCtx); },
+				onChangesRequested: () => { state.round++; },
+				onStop: (stopCtx: any) => {
+					const gitIssue = git.checkGitState(stopCtx.cwd);
+					if (gitIssue && !git.fixGitState(stopCtx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
+						stopCtx.ui.notify(`Git: ${gitIssue.message} -- fix manually`, "warning");
+					}
+				},
+				getAnchorExtras: () => ({
+					commitList: state.commitList,
+					currentCommitIdx: state.currentCommitIdx,
+				}),
+				getPromptExtras: () => ({
+					userFeedback: state.userFeedback,
+					commitSha: state.commitList.length > 0 ? state.commitList[state.currentCommitIdx] : undefined,
+				}),
+				suppressRoundIncrement: true,
+				suppressLogs: true,
+			};
 			rememberAnchor(ctx);
 			blockInteractiveEditors();
 			if (cfg.pauseTimer) pauseTimer();
 			startStatusTimer(ctx);
-			modeHooks = {
-				onApproved: (innerCtx: any) => { pauseTimer(); onInnerLoopDone(innerCtx); },
-				onChangesRequested: () => { state.round++; },
-				suppressRoundIncrement: true,
-				suppressLogs: true,
-			};
 			return true;
 		},
 		beginInnerRound(feedback, commitSha, ctx) {
@@ -570,6 +587,11 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		getCommandCtx: () => loopCommandCtx,
 	});
 
+	// Mode-specific resume handlers — generic dispatch, no hard-coded mode checks.
+	const modeResumers: Record<string, (ctx: any, anchor: any) => Promise<void>> = {
+		manual: manual.resume,
+	};
+
 	// ── Transitions ─────────────────────────────────────
 
 	async function startOverseer(ctx: any, summaryText?: string): Promise<void> {
@@ -596,14 +618,13 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		updateStatus(ctx);
 		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
+		const promptExtras = modeHooks.getPromptExtras?.() ?? {};
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
 			focus: state.focus, round: state.round, reviewMode: state.reviewMode,
 			contextPaths: state.contextPaths, workhorseSummaries: state.workhorseSummaries,
 			unchangedCommits: state.unchangedCommits,
 			changedContextPaths: state.changedContextPaths,
-			userFeedback: state.mode === "manual" ? state.userFeedback : undefined,
-			commitSha: state.mode === "manual" && state.commitList.length > 0
-				? state.commitList[state.currentCommitIdx] : undefined,
+			...promptExtras,
 		}));
 	}
 
@@ -686,18 +707,10 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	async function stopLoop(ctx: any): Promise<void> {
 		const wasRunning = state.phase !== "idle";
-		const mode = state.mode;
 
 		state.phase = "idle";
 
-		if (mode === "manual" && wasRunning) {
-			const gitIssue = git.checkGitState(ctx.cwd);
-			if (gitIssue) {
-				if (!git.fixGitState(ctx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
-					ctx.ui.notify(`Git: ${gitIssue.message} -- fix manually`, "warning");
-				}
-			}
-		}
+		if (wasRunning && modeHooks.onStop) modeHooks.onStop(ctx);
 
 		resumeTimer();
 		stopStatusTimer();
@@ -798,9 +811,10 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
 		const anchor = findAnchor(ctx);
 
-		// Manual mode resume — delegate both commit-backed and plannotator sessions
-		if (anchor?.data?.mode === "manual") {
-			await manual.resume(ctx, anchor);
+		// Delegate to mode-specific resumer if one is registered
+		const resumer = anchor?.data?.mode ? modeResumers[anchor.data.mode] : undefined;
+		if (resumer) {
+			await resumer(ctx, anchor);
 			return;
 		}
 
