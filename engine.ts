@@ -500,87 +500,46 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		}
 	}
 
-	// ── Manual mode (semantic API — manual.ts never sees LoopState) ────
+	// ── Generic loop primitives (used by manual.ts and engine internals) ──
 
-	function initManualSession(init: import("./manual.js").ManualSessionInit, ctx: any): boolean {
+	function prepareLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
+		pauseTimer?: boolean;
+		hooks?: ModeHooks;
+	}): boolean {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
 		loopCommandCtx = ctx;
 		state = newState({
-			mode: "manual",
-			phase: "awaiting_feedback",
-			round: 0,
-			reviewMode: "incremental",
-			focus: init.focus,
-			initialRequest: init.initialRequest,
-			contextPaths: init.contextPaths,
-			maxRounds: init.maxRounds,
-			loopStartedAt: init.loopStartedAt,
-			commitList: init.commitList,
-			currentCommitIdx: init.currentCommitIdx,
-			anchorEntryId: init.anchorEntryId,
+			...overrides,
 			originalModelStr: modelToStr(ctx.model),
 			originalThinking: pi.getThinkingLevel(),
 		});
 		rememberAnchor(ctx);
 		blockInteractiveEditors();
-		if (init.pauseTimer) pauseTimer();
+		if (opts?.pauseTimer) pauseTimer();
 		startStatusTimer(ctx);
-		modeHooks = {
-			onApproved(innerCtx: any) { pauseTimer(); init.onApproved(innerCtx); },
-			onChangesRequested() { state.round++; },
-			suppressRoundIncrement: true,
-			suppressLogs: true,
-		};
+		if (opts?.hooks) modeHooks = opts.hooks;
 		return true;
 	}
 
-	function beginInnerRound(feedback: string, ctx: any): Promise<void> {
+	async function startRound(text: string, ctx: any): Promise<void> {
 		resumeTimer();
-		state.userFeedback = feedback;
-		state.round = 1;
-		state.workhorseSummaries = [];
-		state.overseerLeafId = null;
-		state.roundStartedAt = Date.now();
-
-		// COMMIT prefix — single authoritative location
-		const sha = state.commitList[state.currentCommitIdx];
-		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
-
-		return (async () => {
-			if (!await navigateToAnchor(ctx)) return;
-			await startWorkhorse(overseerText, ctx);
-		})();
+		if (!await navigateToAnchor(ctx)) return;
+		await startWorkhorse(text, ctx);
 	}
 
-	function prepareForReview(): { sha: string | undefined; idx: number; total: number; savedEditor: string | undefined } {
-		state.phase = "awaiting_feedback";
-		const idx = state.currentCommitIdx;
-		const total = state.commitList.length;
-		const sha = state.commitList[idx];
-		if (sha) {
-			statusPrefix = `Manual: ${sha.slice(0, 7)} (${idx + 1}/${total})`;
-			updateStatus(loopCommandCtx);
-		}
-		return { sha, idx, total, savedEditor: savedEnv.EDITOR || savedEnv.VISUAL };
-	}
-
-	function advanceCommit(ctx: any): boolean {
-		if (state.currentCommitIdx >= state.commitList.length - 1) {
-			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-			void stopLoop(ctx);
-			return false;
-		}
-		state.currentCommitIdx++;
-		return true;
+	function setStatus(prefix: string, ctx: any): void {
+		statusPrefix = prefix;
+		updateStatus(ctx);
 	}
 
 	const manual = createManualMode({
 		pi,
-		initManualSession,
+		state: () => state,
+		prepareLoop,
 		stopLoop,
-		beginInnerRound,
-		prepareForReview,
-		advanceCommit,
+		startRound,
+		setStatus,
+		getSavedEditor: () => savedEnv.EDITOR || savedEnv.VISUAL,
 	});
 
 	// ── Transitions ─────────────────────────────────────

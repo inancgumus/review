@@ -1,10 +1,12 @@
 /**
  * Manual review mode — commit-by-commit review driven by the user.
- * Owns: commit selection, editor review, plannotator integration.
- * Engine owns: loop lifecycle, timing, model switching, navigation, state, COMMIT framing.
+ * Owns: commit selection, editor review, plannotator integration,
+ *       inner-round lifecycle, commit advancement.
+ * Engine owns: loop lifecycle, timing, model switching, navigation, workhorse dispatch.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { LoopMode, ReviewMode, RoundResult } from "./types.js";
 import { loadConfig } from "./config.js";
 import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
@@ -12,37 +14,53 @@ import { execSync } from "node:child_process";
 
 const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
-/** Session init params — plain data, no engine types. */
-export interface ManualSessionInit {
+// Engine deps — internal contract, NOT exported.
+// 7 members: pi + 6 generic engine primitives. No manual-specific concepts.
+interface Deps {
+	pi: ExtensionAPI;
+	state(): LoopState;
+	prepareLoop(overrides: Partial<LoopState>, ctx: any, opts?: {
+		pauseTimer?: boolean;
+		hooks?: {
+			onApproved?: (ctx: any) => void;
+			onChangesRequested?: (text: string, ctx: any) => void;
+			suppressRoundIncrement?: boolean;
+			suppressLogs?: boolean;
+		};
+	}): boolean;
+	stopLoop(ctx: any): Promise<void>;
+	startRound(text: string, ctx: any): Promise<void>;
+	setStatus(prefix: string, ctx: any): void;
+	getSavedEditor(): string | undefined;
+}
+
+// LoopState shape — only the fields manual.ts reads/writes.
+// Avoids importing the full engine-internal LoopState type.
+interface LoopState {
+	mode: LoopMode;
+	phase: string;
+	round: number;
 	focus: string;
 	initialRequest: string;
 	contextPaths: string[];
 	maxRounds: number;
-	loopStartedAt: number;
+	reviewMode: ReviewMode;
 	commitList: string[];
 	currentCommitIdx: number;
+	userFeedback: string;
+	workhorseSummaries: string[];
+	overseerLeafId: string | null;
+	roundStartedAt: number;
+	loopStartedAt: number;
 	anchorEntryId: string | null;
-	pauseTimer: boolean;
-	onApproved(ctx: any): void;
+	pausedElapsed: number;
+	[key: string]: any; // engine may have additional fields
 }
 
-/** Semantic engine API — manual.ts doesn't see LoopState or engine internals. */
-export interface ManualEngine {
-	pi: ExtensionAPI;
-	initManualSession(init: ManualSessionInit, ctx: any): boolean;
-	stopLoop(ctx: any): Promise<void>;
-	/** Resets round state, frames COMMIT prefix, navigates, starts workhorse. */
-	beginInnerRound(feedback: string, ctx: any): Promise<void>;
-	/** Sets phase to awaiting_feedback, updates status, returns current commit info. */
-	prepareForReview(): { sha: string | undefined; idx: number; total: number; savedEditor: string | undefined };
-	/** Advances to next commit. Returns false if at end. */
-	advanceCommit(ctx: any): boolean;
-}
-
-export function createManualMode(engine: ManualEngine) {
+export function createManualMode(deps: Deps) {
 	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
-	if (engine.pi.events?.on) {
-		engine.pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
+	if (deps.pi.events?.on) {
+		deps.pi.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
 	}
 
 	// ── Plannotator integration ─────────────────────
@@ -53,9 +71,9 @@ export function createManualMode(engine: ManualEngine) {
 		const cfg = loadConfig(cwd || "");
 		if (!cfg.plannotator) { plannotatorAvailable = false; return false; }
 		if (plannotatorAvailable !== null) return plannotatorAvailable;
-		if (!engine.pi.events?.emit) { plannotatorAvailable = false; return false; }
+		if (!deps.pi.events?.emit) { plannotatorAvailable = false; return false; }
 		let responded = false;
-		engine.pi.events.emit("plannotator:request", {
+		deps.pi.events.emit("plannotator:request", {
 			requestId: `detect-${Date.now()}`,
 			action: "review-status",
 			payload: { reviewId: "__loop_detect__" },
@@ -67,7 +85,7 @@ export function createManualMode(engine: ManualEngine) {
 
 	async function openPlannotator(ctx: any): Promise<{ approved: boolean; feedback?: string } | null> {
 		return new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
-			engine.pi.events.emit("plannotator:request", {
+			deps.pi.events.emit("plannotator:request", {
 				requestId: `loop-review-${Date.now()}`,
 				action: "code-review",
 				payload: { diffType: "branch", cwd: ctx.cwd },
@@ -91,23 +109,66 @@ export function createManualMode(engine: ManualEngine) {
 		return false;
 	}
 
+	// ── Manual-specific lifecycle (owned here, NOT in engine) ──
+
+	function beginInnerRound(feedback: string, ctx: any): Promise<void> {
+		const state = deps.state();
+		state.userFeedback = feedback;
+		state.round = 1;
+		state.workhorseSummaries = [];
+		state.overseerLeafId = null;
+		state.roundStartedAt = Date.now();
+
+		const sha = state.commitList[state.currentCommitIdx];
+		const overseerText = sha ? `[COMMIT:${sha}]\n${feedback}` : feedback;
+
+		return deps.startRound(overseerText, ctx);
+	}
+
+	function prepareForReview(ctx: any): { sha: string | undefined; savedEditor: string | undefined } {
+		const state = deps.state();
+		state.phase = "awaiting_feedback";
+		const sha = state.commitList[state.currentCommitIdx];
+		if (sha) {
+			deps.setStatus(`Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`, ctx);
+		}
+		return { sha, savedEditor: deps.getSavedEditor() };
+	}
+
+	function advanceCommit(ctx: any): boolean {
+		const state = deps.state();
+		if (state.currentCommitIdx >= state.commitList.length - 1) {
+			ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
+			void deps.stopLoop(ctx);
+			return false;
+		}
+		state.currentCommitIdx++;
+		return true;
+	}
+
+	function afterInnerLoop(ctx: any): void {
+		const state = deps.state();
+		if (state.phase === "idle") return;
+		void deps.stopLoop(ctx);
+	}
+
 	// ── Commit review UI ────────────────────────────
 
 	async function reviewCommitLoop(ctx: any): Promise<void> {
-		if (!recoverGitState(ctx)) { await engine.stopLoop(ctx); return; }
+		if (!recoverGitState(ctx)) { await deps.stopLoop(ctx); return; }
 
 		while (true) {
-			const info = engine.prepareForReview();
-			if (!info.sha) { await engine.stopLoop(ctx); return; }
+			const { sha, savedEditor } = prepareForReview(ctx);
+			if (!sha) { await deps.stopLoop(ctx); return; }
 
-			const result = reviewFn(info.sha, ctx.cwd, info.savedEditor);
+			const result = reviewFn(sha, ctx.cwd, savedEditor);
 
 			if (result.approved) {
-				if (!engine.advanceCommit(ctx)) return; // advanceCommit stops loop if at end
+				if (!advanceCommit(ctx)) return;
 				continue;
 			}
 
-			await engine.beginInnerRound(result.feedback, ctx);
+			await beginInnerRound(result.feedback, ctx);
 			return;
 		}
 	}
@@ -157,7 +218,11 @@ export function createManualMode(engine: ManualEngine) {
 		maxRounds: number; commitList?: string[]; currentCommitIdx?: number;
 		anchorEntryId?: string; pauseTimer?: boolean;
 	}, ctx: any): boolean {
-		return engine.initManualSession({
+		return deps.prepareLoop({
+			mode: "manual",
+			phase: "awaiting_feedback",
+			round: 0,
+			reviewMode: "incremental",
 			focus: opts.focus,
 			initialRequest: opts.initialRequest,
 			contextPaths: opts.contextPaths,
@@ -166,9 +231,15 @@ export function createManualMode(engine: ManualEngine) {
 			commitList: opts.commitList ?? [],
 			currentCommitIdx: opts.currentCommitIdx ?? 0,
 			anchorEntryId: opts.anchorEntryId ?? null,
-			pauseTimer: opts.pauseTimer ?? false,
-			onApproved(innerCtx: any) { void engine.stopLoop(innerCtx); },
-		}, ctx);
+		}, ctx, {
+			pauseTimer: opts.pauseTimer,
+			hooks: {
+				onApproved: (innerCtx: any) => afterInnerLoop(innerCtx),
+				onChangesRequested: () => { deps.state().round++; },
+				suppressRoundIncrement: true,
+				suppressLogs: true,
+			},
+		});
 	}
 
 	// ── Entry points ────────────────────────────────
@@ -189,11 +260,11 @@ export function createManualMode(engine: ManualEngine) {
 			const result = await openPlannotator(ctx);
 			if (!result || result.approved) {
 				ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
-				await engine.stopLoop(ctx);
+				await deps.stopLoop(ctx);
 				return;
 			}
 			if (result.feedback) {
-				await engine.beginInnerRound(result.feedback, ctx);
+				await beginInnerRound(result.feedback, ctx);
 			}
 			return;
 		}
@@ -271,11 +342,11 @@ export function createManualMode(engine: ManualEngine) {
 		const result = await openPlannotator(ctx);
 		if (!result || result.approved) {
 			ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
-			await engine.stopLoop(ctx);
+			await deps.stopLoop(ctx);
 			return;
 		}
 		if (result.feedback) {
-			await engine.beginInnerRound(result.feedback, ctx);
+			await beginInnerRound(result.feedback, ctx);
 		}
 	}
 
