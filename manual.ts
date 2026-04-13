@@ -278,6 +278,9 @@ export function createManualMode(deps: ManualDeps): ManualMode {
 	}
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
+		// Restore the repo cwd saved in the anchor, falling back to gitToplevel detection.
+		// pi can set ctx.cwd to ~ when launched with a path arg, so we can't trust it.
+		ctx.cwd = anchor.data.cwd || git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
 		const cfg = loadConfig(ctx.cwd);
 		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];
 

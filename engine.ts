@@ -295,6 +295,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			initialRequest: state.initialRequest,
 			contextPaths: state.contextPaths,
 			mode: state.mode,
+			cwd: ctx.cwd,
 			commitList: state.mode === "manual" ? state.commitList : undefined,
 			currentCommitIdx: state.mode === "manual" ? state.currentCommitIdx : undefined,
 		});
@@ -611,6 +612,9 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			await manual.resume(ctx, anchor);
 			return;
 		}
+
+		// Restore cwd from anchor (pi can set ctx.cwd to ~ on restart)
+		if (anchor?.data?.cwd) ctx.cwd = anchor.data.cwd;
 
 		const recovered = reconstructState(ctx);
 		if (!recovered) { ctx.ui.notify("Nothing to resume. Use /loop to start.", "info"); return; }

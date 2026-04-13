@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import loopExtension from "../index.ts";
@@ -935,6 +935,68 @@ test("plannotator path: /loop:resume resumes active plannotator manual session",
 		const allNotifs = h.notifications.map(n => n.message).join(" ");
 		assert.doesNotMatch(allNotifs, /Nothing to resume/, "should not say nothing to resume");
 		assert.doesNotMatch(allNotifs, /commit 1\/0/, "should not show commit 1/0");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("commit-backed manual /loop:resume works when ctx.cwd is non-git", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha = addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+		h.reviewResults.push({ approved: true, feedback: "" });
+		await h.commands.get("loop:manual")!(sha, h.ctx);
+
+		// Simulate pi switching cwd to home (non-git directory)
+		h.ctx.cwd = tmpdir();
+
+		h.notifications.length = 0;
+		await h.commands.get("loop:resume")!("", h.ctx);
+
+		const allNotifs = h.notifications.map(n => n.message).join(" ");
+		// Should NOT fail with "no longer exists" — resume should resolve the repo cwd
+		assert.doesNotMatch(allNotifs, /no longer exists/i, "should not claim commit is gone");
+		assert.match(allNotifs, /Resuming manual review/i, "should resume successfully");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("plannotator-backed manual /loop:resume resolves repo cwd, not home", async () => {
+	const repo = createTempRepo();
+	try {
+		addCommit(repo.cwd, "a.txt", "hello", "some commit");
+
+		const h = createHarness(repo.cwd);
+
+		let plannotatorCwd = "";
+		h.pi.events.on("plannotator:request", (req: any) => {
+			if (req.action === "review-status") {
+				req.respond({ status: "handled" });
+			} else if (req.action === "code-review") {
+				plannotatorCwd = req.payload?.cwd || "";
+				req.respond({ status: "handled", result: { approved: true } });
+			}
+		});
+
+		// Start plannotator manual mode — approves, loop stops
+		await h.commands.get("loop:manual")!("", h.ctx);
+
+		// Simulate pi switching cwd to home
+		h.ctx.cwd = tmpdir();
+
+		h.notifications.length = 0;
+		plannotatorCwd = "";
+		await h.commands.get("loop:resume")!("", h.ctx);
+
+		// Plannotator should have been called with the repo cwd, not the overridden tmpdir
+		assert.ok(plannotatorCwd, "plannotator was called on resume");
+		// ctx.cwd was set to tmpdir() before resume — plannotator should NOT get that bare tmpdir
+		assert.notEqual(plannotatorCwd, tmpdir(), "plannotator cwd should not be bare tmpdir");
+		// It should be the original repo path (stored in anchor)
+		assert.equal(realpathSync(plannotatorCwd), realpathSync(repo.cwd), "plannotator cwd should be the repo");
 	} finally {
 		repo.cleanup();
 	}
