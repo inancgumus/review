@@ -72,7 +72,7 @@ export default function (pi: ExtensionAPI) {
 			engine.state.maxRounds = num;
 			saveConfigField("maxRounds", num);
 			if (engine.state.phase !== "idle") ctx.ui.setStatus("loop", `${engine.state.phase === "reviewing" ? "🔍" : "🔧"} Round ${engine.state.round}/${num}`);
-			ctx.ui.notify(`Max rounds → ${num}`, "success");
+			ctx.ui.notify(`Max rounds → ${num}`, "info");
 		},
 	});
 
@@ -117,12 +117,12 @@ export default function (pi: ExtensionAPI) {
 				else if (action.startsWith("Plannotator")) {
 					const newVal = !cfg.plannotator;
 					saveConfigField("plannotator", newVal as any);
-					ctx.ui.notify(`Plannotator → ${newVal ? "enabled" : "disabled"}`, "success");
+					ctx.ui.notify(`Plannotator → ${newVal ? "enabled" : "disabled"}`, "info");
 				}
 				else if (action.startsWith("Rewrite history")) {
 					const newVal = !cfg.rewriteHistory;
 					saveConfigField("rewriteHistory", newVal as any);
-					ctx.ui.notify(`Rewrite history → ${newVal ? "enabled" : "disabled"}`, "success");
+					ctx.ui.notify(`Rewrite history → ${newVal ? "enabled" : "disabled"}`, "info");
 				}
 			}
 		},
@@ -136,13 +136,13 @@ export default function (pi: ExtensionAPI) {
 			models.map(m => m === current ? `${m}  ✓` : m));
 		if (!picked) return;
 		const model = picked.replace(/\s+✓$/, "");
-		if (model !== current) { saveConfigField(field, model); ctx.ui.notify(`${field} → ${model}`, "success"); }
+		if (model !== current) { saveConfigField(field, model); ctx.ui.notify(`${field} → ${model}`, "info"); }
 	}
 
 	async function editMaxRounds(current: number, ctx: any): Promise<void> {
 		const val = await ctx.ui.input("Max rounds", String(current));
 		const num = val ? parseInt(val, 10) : NaN;
-		if (!isNaN(num) && num > 0 && num !== current) { saveConfigField("maxRounds", num); ctx.ui.notify(`Max rounds → ${num}`, "success"); }
+		if (!isNaN(num) && num > 0 && num !== current) { saveConfigField("maxRounds", num); ctx.ui.notify(`Max rounds → ${num}`, "info"); }
 	}
 
 	async function pickThinking(field: "overseerThinking" | "workhorseThinking", current: string, ctx: any): Promise<void> {
@@ -150,7 +150,7 @@ export default function (pi: ExtensionAPI) {
 			THINKING_LEVELS.map(l => l === current ? `${l}  ✓` : l));
 		if (!picked) return;
 		const level = picked.replace(/\s+✓$/, "");
-		if (level !== current) { saveConfigField(field, level); ctx.ui.notify(`${field} → ${level}`, "success"); }
+		if (level !== current) { saveConfigField(field, level); ctx.ui.notify(`${field} → ${level}`, "info"); }
 	}
 
 	async function pickReviewMode(current: ReviewMode, ctx: any): Promise<void> {
@@ -160,6 +160,6 @@ export default function (pi: ExtensionAPI) {
 		]);
 		if (!picked) return;
 		const mode = picked.split(/\s/)[0] as ReviewMode;
-		if (mode !== current) { saveConfigField("reviewMode", mode); ctx.ui.notify(`Loop mode → ${mode}`, "success"); }
+		if (mode !== current) { saveConfigField("reviewMode", mode); ctx.ui.notify(`Loop mode → ${mode}`, "info"); }
 	}
 }

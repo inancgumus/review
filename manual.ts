@@ -12,7 +12,7 @@ import { git } from "./git.js";
 import { reviewCommitInEditor } from "./diff-review.js";
 import { execSync } from "node:child_process";
 
-const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
+const GIT_OPTS: { encoding: "utf-8"; timeout: number } = { encoding: "utf-8", timeout: 5000 };
 
 /** High-level engine contract for manual mode. 6 methods, no primitives. */
 interface ManualEngine {

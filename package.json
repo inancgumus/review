@@ -1,0 +1,10 @@
+{
+  "name": "pi-loop",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "file:/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent",
+    "@types/node": "^22.0.0",
+    "typescript": "^6.0.2"
+  }
+}

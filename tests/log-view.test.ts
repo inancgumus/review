@@ -188,8 +188,8 @@ test("Tab switches focus between list and detail panels", async () => {
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A" },
-		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
+		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -231,8 +231,8 @@ test("j/k navigate entries in list panel, q closes", async () => {
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A" },
-		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "issue A", workhorseSummary: "fixed A", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
+		{ round: 2, verdict: "approved" as const, overseerText: "all good", workhorseSummary: "", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
 	];
 	let closed = false;
 	let capturedFactory: any;
@@ -277,7 +277,7 @@ test("default selection is first entry (Request), not last", async () => {
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, overseerText: "review text", workhorseSummary: "fixer text" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: "review text", workhorseSummary: "fixer text", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -405,6 +405,7 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 			round: 1, verdict: "changes_requested" as const,
 			overseerText: filler + "\ntarget_line_alpha\n" + filler + `\n${V_CHANGES}`,
 			workhorseSummary: "[Workhorse Round 1] " + filler + "\ntarget_line_beta\n" + filler,
+			startedAt: 0, endedAt: 0, workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -454,7 +455,7 @@ test("search highlights with ANSI reverse video, Esc clears", async () => {
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "changes_requested" as const, overseerText: `found a mutex bug\n\n${V_CHANGES}`, workhorseSummary: "fixed it" },
+		{ round: 1, verdict: "changes_requested" as const, overseerText: `found a mutex bug\n\n${V_CHANGES}`, workhorseSummary: "fixed it", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
 	];
 	let capturedFactory: any;
 	const mockCtx = {
@@ -495,7 +496,7 @@ test("partial round shows overseer item without workhorse item", async () => {
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
-	const roundResults = [{ round: 1, verdict: "changes_requested" as const, overseerText: overseerText, workhorseSummary: "" }];
+	const roundResults = [{ round: 1, verdict: "changes_requested" as const, overseerText: overseerText, workhorseSummary: "", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 }];
 	let capturedFactory: any;
 	const mockCtx = {
 		hasUI: true,
@@ -529,6 +530,7 @@ test("current match uses distinct style from other matches", async () => {
 			round: 1, verdict: "changes_requested" as const,
 			overseerText: `Test alpha and Test beta\n\n${V_CHANGES}`,
 			workhorseSummary: "done",
+			startedAt: 0, endedAt: 0, workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -570,6 +572,7 @@ test("n/N visually moves highlight to the new match location", async () => {
 			round: 1, verdict: "changes_requested" as const,
 			overseerText: "first_match here\n" + filler + `\nsecond_match here\n\n${V_CHANGES}`,
 			workhorseSummary: "done",
+			startedAt: 0, endedAt: 0, workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -618,6 +621,7 @@ test("highlight uses reset to avoid color bleed from code blocks", async () => {
 			round: 1, verdict: "changes_requested" as const,
 			overseerText: "```go\nfunc handleConn() error {\n```\n\n" + V_CHANGES,
 			workhorseSummary: "done",
+			startedAt: 0, endedAt: 0, workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -661,6 +665,7 @@ test("round timing shows duration in header and detail markdown", async () => {
 			workhorseSummary: "fixed A",
 			startedAt: now - 15 * 60000,
 			endedAt: now - 3 * 60000,
+			workhorseStartedAt: 0,
 		},
 		{
 			round: 2, verdict: "approved" as const,
@@ -668,6 +673,7 @@ test("round timing shows duration in header and detail markdown", async () => {
 			workhorseSummary: "",
 			startedAt: now - 3 * 60000,
 			endedAt: now,
+			workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -709,6 +715,7 @@ test("log header shows total elapsed time when rounds have timing", async () => 
 			workhorseSummary: "fix",
 			startedAt: now - 45 * 60000,
 			endedAt: now - 30 * 60000,
+			workhorseStartedAt: 0,
 		},
 		{
 			round: 2, verdict: "approved" as const,
@@ -716,6 +723,7 @@ test("log header shows total elapsed time when rounds have timing", async () => 
 			workhorseSummary: "",
 			startedAt: now - 30 * 60000,
 			endedAt: now,
+			workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -751,6 +759,7 @@ test("timing is hidden when startedAt/endedAt are zero", async () => {
 			workhorseSummary: "",
 			startedAt: 0,
 			endedAt: 0,
+			workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -860,6 +869,7 @@ test("log viewer Request entry shows Started time in detail", async () => {
 			workhorseSummary: "",
 			startedAt: now - 10 * 60000,
 			endedAt: now,
+			workhorseStartedAt: 0,
 		},
 	];
 	let capturedFactory: any;
@@ -885,7 +895,7 @@ test("log viewer Request entry shows Started time in detail", async () => {
 test("status bar uses stopwatch emoji format for round and total", async () => {
 	const h = createHarness();
 	const statusTexts: string[] = [];
-	h.ctx.ui.setStatus = (_key: string, text: string) => { if (text) statusTexts.push(text); };
+	(h.ctx.ui as any).setStatus = (_key: string, text: string) => { if (text) statusTexts.push(text); };
 
 	const loop = h.commands.get("loop");
 	assert.ok(loop);
@@ -902,7 +912,7 @@ test("status bar uses stopwatch emoji format for round and total", async () => {
 test("status timer stops after loop stops", async () => {
 	const h = createHarness();
 	const statusTexts: string[] = [];
-	h.ctx.ui.setStatus = (_key: string, text: string) => { statusTexts.push(text); };
+	(h.ctx.ui as any).setStatus = (_key: string, text: string) => { statusTexts.push(text); };
 
 	const loop = h.commands.get("loop");
 	assert.ok(loop);
@@ -999,7 +1009,7 @@ test("overlay renders enough lines to fill maxHeight for proper centering", asyn
 	initTheme();
 
 	const rounds = [
-		{ round: 1, verdict: "approved" as const, overseerText: `ok\n\n${V_APPROVED}`, workhorseSummary: "" },
+		{ round: 1, verdict: "approved" as const, overseerText: `ok\n\n${V_APPROVED}`, workhorseSummary: "", startedAt: 0, endedAt: 0, workhorseStartedAt: 0 },
 	];
 	let capturedFactory: any;
 	let capturedOpts: any;

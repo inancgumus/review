@@ -486,7 +486,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const model = findModel(modelStr, ctx);
 		if (!model) { ctx.ui.notify(`Model not found: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
 		if (!await pi.setModel(model)) { ctx.ui.notify(`No API key for model: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
-		pi.setThinkingLevel(thinking);
+		pi.setThinkingLevel(thinking as any);
 		return true;
 	}
 
@@ -725,7 +725,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const model = findModel(state.originalModelStr, ctx);
 		if (!model) { ctx.ui.notify(`Could not restore model: ${state.originalModelStr}`, "error"); return; }
 		await pi.setModel(model);
-		pi.setThinkingLevel(state.originalThinking);
+		pi.setThinkingLevel(state.originalThinking as any);
 		const elapsed = totalElapsed();
 		if (elapsed > 1000) ctx.ui.notify(`Loop ended. ${formatDuration(elapsed)} elapsed.`, "info");
 	}

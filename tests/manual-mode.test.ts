@@ -1,11 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 import { tmpdir } from "node:os";
 import loopExtension from "../index.ts";
+
+const SETTINGS_DIR = mkdtempSync(join(tmpdir(), "loop-settings-"));
+const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
+process.env.LOOP_SETTINGS_PATH = SETTINGS_PATH;
+
+function readSettings(): any {
+	try { return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")); }
+	catch { return {}; }
+}
+
+function writeSettings(settings: any): void {
+	mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
+	writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+}
+
+function setLoopSetting(key: string, value: unknown): void {
+	const settings = readSettings();
+	if (!settings.loop) settings.loop = {};
+	settings.loop[key] = value;
+	writeSettings(settings);
+}
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -597,6 +618,7 @@ test("/loop:resume with plannotator anchor but no plannotator returns promptly",
 
 test("/loop:resume with stale plannotator cache does not hang", async () => {
 	const repo = createTempRepo();
+	setLoopSetting("plannotator", true);
 	try {
 		addCommit(repo.cwd, "a.txt", "hello", "some commit");
 
