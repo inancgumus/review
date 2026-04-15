@@ -4,7 +4,7 @@
  * /loop [focus] [@path ...]       — Start review loop
  * /loop:exec [focus] [@path ...]  — Start exec loop (plan orchestrator → workhorse)
  * /loop:manual [range]            — Manual review (you drive, commit by commit)
- * /loop:resume                    — Resume from session state
+ * /loop:resume                    — Resume loop from session state
  * /loop:rounds <n>                — Change max rounds
  * /loop:stop                      — Stop the loop
  * /loop:log                       — Browse verdicts and workhorse summaries
@@ -20,37 +20,38 @@ import { createFreshReview } from "./review-fresh.js";
 import { createIncrementalReview } from "./review-incremental.js";
 import { createExecMode } from "./exec.js";
 import { createManualMode } from "./manual.js";
+import { createPlannotator } from "./plannotator.js";
 import { showLog } from "./log-view.js";
 import { buildDemoData } from "./demo.js";
 
-export { showLog, loadPiAgent } from "./log-view.js";
+export { showLog } from "./log-view.js";
 export { loadConfig, saveConfigField } from "./config.js";
 
-export default function (pi: ExtensionAPI) {
+export interface LoopExtensionOpts {
+	reviewFn?: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string };
+}
+
+export default function (pi: ExtensionAPI, opts?: LoopExtensionOpts) {
 	const session = createSession(pi);
 	const status = createStatus();
-	const fresh = createFreshReview(pi, session, status);
-	const incremental = createIncrementalReview(pi, session, status);
-	const exec = createExecMode(pi, session, status);
-	const manual = createManualMode(pi, session, status);
-
-	// Block file-modifying tools (edit, write) when the overseer is reviewing.
-	const BLOCKED_TOOLS_DURING_REVIEW = ["edit", "write"];
-	pi.on("tool_call", async (event) => {
-		const reviewing = fresh.state.phase === "reviewing" || incremental.state.phase === "reviewing" || exec.state.phase === "reviewing" || manual.state.phase === "reviewing";
-		if (!reviewing) return;
-		if (BLOCKED_TOOLS_DURING_REVIEW.includes(event.toolName)) {
-			return { block: true, reason: "You are the OVERSEER — do not edit or write files. Only use read and bash (for git/grep/find/ls). Report issues with file, line, what's wrong, and how to fix." };
-		}
+	const fresh = createFreshReview(session, status);
+	const incremental = createIncrementalReview(session, status);
+	const exec = createExecMode(session, status);
+	const plannotator = createPlannotator(pi.events?.emit?.bind(pi.events) ?? null);
+	const manual = createManualMode(session, status, {
+		reviewFn: opts?.reviewFn,
+		plannotator,
 	});
+	const allModes = [fresh, incremental, exec, manual] as const;
 
-	pi.on("agent_end", (_event, ctx) => {
-		session.notifyAgentEnd(_event, ctx);
-	});
+	function activeMode() {
+		return allModes.find(m => m.isRunning()) ?? null;
+	}
 
 	pi.registerCommand("loop", {
 		description: "Start loop. Usage: /loop [focus] [@path ...]",
-		handler: (args, ctx) => {
+		handler: async (args, ctx) => {
+			if (activeMode()) { ctx.ui.notify("A loop is already running — /loop:stop to cancel", "warning"); return; }
 			const cfg = loadConfig(ctx.cwd);
 			if (cfg.reviewMode === "fresh") return fresh.start(args, ctx);
 			return incremental.start(args, ctx);
@@ -59,45 +60,42 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("loop:exec", {
 		description: "Start exec loop (orchestrator → workhorse). Usage: /loop:exec [focus] [@path ...]",
-		handler: (args, ctx) => exec.start(args, ctx),
+		handler: async (args, ctx) => {
+			if (activeMode()) { ctx.ui.notify("A loop is already running — /loop:stop to cancel", "warning"); return; }
+			return exec.start(args, ctx);
+		},
 	});
 
 	pi.registerCommand("loop:manual", {
-		description: "Manual review. Usage: /loop:manual [sha]",
-		handler: (args, ctx) => manual.start(args, ctx),
+		description: "Manual review. Usage: /loop:manual [sha|range]",
+		handler: async (args, ctx) => {
+			if (activeMode()) { ctx.ui.notify("A loop is already running — /loop:stop to cancel", "warning"); return; }
+			return manual.start(args, ctx);
+		},
 	});
+
+	const resumable = new Map<string, { resume(ctx: any, anchor: { id: string; data: any }): Promise<void> }>([
+		["fresh", fresh], ["incremental", incremental], ["exec", exec], ["manual", manual],
+	]);
 
 	pi.registerCommand("loop:resume", {
 		description: "Resume loop from session state",
 		handler: async (_args, ctx) => {
+			if (activeMode()) { ctx.ui.notify("A loop is already running — /loop:stop to cancel", "warning"); return; }
 			const anchor = session.findAnchor(ctx);
-			if (anchor?.data?.mode === "manual") {
-				await manual.resume(ctx, anchor);
-				return;
-			}
-			ctx.ui.notify("Nothing to resume. Use /loop to start.", "info");
-			return;
+			const target = anchor ? resumable.get(anchor.data?.mode) : undefined;
+			if (!target || !anchor) { ctx.ui.notify("Nothing to resume. Use /loop to start.", "info"); return; }
+			await target.resume(ctx, anchor);
 		},
 	});
 
 	pi.registerCommand("loop:stop", {
 		description: "Stop the loop",
 		handler: async (_args, ctx) => {
-			if (fresh.state.phase !== "idle") {
-				ctx.ui.notify("Loop stopped", "info");
-				await fresh.stop(ctx);
-			} else if (incremental.state.phase !== "idle") {
-				ctx.ui.notify("Loop stopped", "info");
-				await incremental.stop(ctx);
-			} else if (exec.state.phase !== "idle") {
-				ctx.ui.notify("Loop stopped", "info");
-				await exec.stop(ctx);
-			} else if (manual.state.phase !== "idle") {
-				ctx.ui.notify("Loop stopped", "info");
-				await manual.stop(ctx);
-			} else {
-				ctx.ui.notify("No loop running", "info");
-			}
+			const active = activeMode();
+			if (!active) { ctx.ui.notify("No loop running", "info"); return; }
+			ctx.ui.notify("Loop stopped", "info");
+			await active.stop(ctx);
 		},
 	});
 
@@ -105,15 +103,12 @@ export default function (pi: ExtensionAPI) {
 		description: "Change max rounds: /loop:rounds <n>",
 		handler: async (args, ctx) => {
 			const num = parseInt(args, 10);
+			const active = activeMode();
 			if (isNaN(num) || num < 1) {
-				const active = fresh.state.phase !== "idle" ? fresh.state : incremental.state.phase !== "idle" ? incremental.state : exec.state.phase !== "idle" ? exec.state : manual.state;
-				ctx.ui.notify(`Current max rounds: ${active.phase !== "idle" ? active.maxRounds : loadConfig(ctx.cwd).maxRounds}. Usage: /loop:rounds <n>`, "info");
+					ctx.ui.notify(`Current max rounds: ${active ? active.getMaxRounds() : loadConfig(ctx.cwd).maxRounds}. Usage: /loop:rounds <n>`, "info");
 				return;
 			}
-			if (fresh.state.phase !== "idle") fresh.state.maxRounds = num;
-			else if (incremental.state.phase !== "idle") incremental.state.maxRounds = num;
-			else if (exec.state.phase !== "idle") exec.state.maxRounds = num;
-			else if (manual.state.phase !== "idle") manual.state.maxRounds = num;
+			if (active) active.setMaxRounds(num);
 			saveConfigField("maxRounds", num);
 			ctx.ui.notify(`Max rounds → ${num}`, "info");
 		},
@@ -122,13 +117,16 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("loop:log", {
 		description: "Browse overseer + workhorse logs in a modal viewer",
 		handler: async (_args, ctx) => {
-			const fState = fresh.state;
-			const iState = incremental.state;
-			const xState = exec.state;
-			const mState = manual.state;
-			const results = fState.initialRequest ? fState : iState.initialRequest ? iState : xState.initialRequest ? xState : mState;
-			if (results.roundResults.length === 0 && !results.initialRequest) { ctx.ui.notify("No loop rounds recorded yet.", "info"); return; }
-			await showLog(results.initialRequest, results.roundResults, ctx, results.loopStartedAt);
+			// Pick the most recent run by loopStartedAt.
+			const snapshots = allModes
+				.map(m => m.logSnapshot())
+				.filter((s): s is NonNullable<typeof s> => s !== null)
+				.sort((a, b) => b.loopStartedAt - a.loopStartedAt);
+			const best = snapshots[0];
+			if (!best || (best.roundResults.length === 0 && !best.initialRequest)) {
+				ctx.ui.notify("No loop rounds recorded yet.", "info"); return;
+			}
+			await showLog(best.initialRequest, best.roundResults, ctx, best.loopStartedAt);
 		},
 	});
 

@@ -1,6 +1,9 @@
 /**
  * Context — @path file I/O, arg parsing, and context hashing.
  * Single owner for all context-path operations.
+ *
+ * Raw reading and hashing are separate from prompt formatting.
+ * Hashes use raw file bytes so formatting changes cannot produce false diffs.
  */
 
 import * as fs from "node:fs";
@@ -15,43 +18,66 @@ function expandTilde(p: string): string {
 	return p;
 }
 
-function readFileContent(filePath: string): string | null {
-	try {
-		const resolved = expandTilde(filePath);
-		const stat = fs.statSync(resolved);
-		if (stat.isFile()) {
-			if (stat.size > MAX_FILE_SIZE)
-				return `[${filePath}: skipped, ${Math.round(stat.size / 1024)}KB > 50KB limit]`;
-			return `### ${filePath}\n\`\`\`\n${fs.readFileSync(resolved, "utf-8")}\n\`\`\``;
-		}
-		if (stat.isDirectory()) return readDirContent(resolved, filePath, new Set());
-	} catch { /* skip */ }
-	return null;
-}
+// ── Raw reading (no formatting) ─────────────────────────
 
-function readDirContent(dirPath: string, displayPath: string, seen: Set<string>): string {
-	let realPath: string;
-	try { realPath = fs.realpathSync(dirPath); } catch { return ""; }
-	if (seen.has(realPath)) return "";
-	seen.add(realPath);
-	const parts: string[] = [];
-	for (const entry of safeDirEntries(dirPath)) {
-		if (entry.name.startsWith(".")) continue;
-		const full = path.join(dirPath, entry.name);
-		const display = path.join(displayPath, entry.name);
-		const content = entry.isFile()
-			? readFileContent(full)
-			: entry.isDirectory()
-				? readDirContent(full, display, seen)
-				: null;
-		if (content) parts.push(content);
-	}
-	return parts.join("\n\n");
+export interface ContextEntry {
+	path: string;
+	content: string;
 }
 
 function safeDirEntries(dirPath: string): fs.Dirent[] {
 	try { return fs.readdirSync(dirPath, { withFileTypes: true }); }
 	catch { return []; }
+}
+
+/** Collect entries for a path. Directories expand recursively with cycle guard. */
+function collectEntries(filePath: string, out: ContextEntry[]): void {
+	try {
+		const resolved = expandTilde(filePath);
+		const stat = fs.statSync(resolved);
+		if (stat.isFile()) {
+			if (stat.size <= MAX_FILE_SIZE) {
+				out.push({ path: filePath, content: fs.readFileSync(resolved, "utf-8") });
+			}
+		} else if (stat.isDirectory()) {
+			collectDirEntries(resolved, filePath, new Set(), out);
+		}
+	} catch { /* skip missing/unreadable */ }
+}
+
+function collectDirEntries(dirPath: string, displayBase: string, seen: Set<string>, out: ContextEntry[]): void {
+	let realPath: string;
+	try { realPath = fs.realpathSync(dirPath); } catch { return; }
+	if (seen.has(realPath)) return;
+	seen.add(realPath);
+	for (const entry of safeDirEntries(dirPath)) {
+		if (entry.name.startsWith(".")) continue;
+		const full = path.join(dirPath, entry.name);
+		const display = path.join(displayBase, entry.name);
+		if (entry.isFile()) {
+			try {
+				const stat = fs.statSync(full);
+				if (stat.size <= MAX_FILE_SIZE) {
+					out.push({ path: display, content: fs.readFileSync(full, "utf-8") });
+				}
+			} catch { /* skip */ }
+		} else if (entry.isDirectory()) {
+			collectDirEntries(full, display, seen, out);
+		}
+	}
+}
+
+/** Read raw content for each path. Directories expand to individual child files. */
+export function readContextPaths(paths: string[]): ContextEntry[] {
+	const entries: ContextEntry[] = [];
+	for (const p of paths) collectEntries(p, entries);
+	return entries;
+}
+
+/** Format entries as a "## Context files" markdown block. Empty string for empty input. */
+export function formatContextMarkdown(entries: ContextEntry[]): string {
+	if (entries.length === 0) return "";
+	return "\n\n## Context files\n\n" + entries.map(e => `### ${e.path}\n\`\`\`\n${e.content}\n\`\`\``).join("\n\n");
 }
 
 export function parseArgs(args: string, cwd: string): { focus: string; contextPaths: string[] } {
@@ -67,23 +93,11 @@ export function parseArgs(args: string, cwd: string): { focus: string; contextPa
 	return { focus: remaining.join(" ").trim() || "all recent code changes", contextPaths };
 }
 
-export function expandContextPaths(paths: string[]): string {
-	if (paths.length === 0) return "";
-	const parts: string[] = [];
-	for (const p of paths) {
-		const content = readFileContent(p);
-		if (content) parts.push(content);
-	}
-	return parts.length > 0 ? "\n\n## Context files\n\n" + parts.join("\n\n") : "";
-}
-
+/** Hash raw file bytes. Formatting changes cannot produce false diffs. */
 export function snapshotContextHashes(paths: string[]): Map<string, string> {
 	const map = new Map<string, string>();
-	for (const p of paths) {
-		const content = readFileContent(p);
-		if (content) {
-			map.set(p, createHash("sha256").update(content).digest("hex"));
-		}
+	for (const entry of readContextPaths(paths)) {
+		map.set(entry.path, createHash("sha256").update(entry.content).digest("hex"));
 	}
 	return map;
 }
@@ -91,10 +105,8 @@ export function snapshotContextHashes(paths: string[]): Map<string, string> {
 export function findChangedContextPaths(paths: string[], before: Map<string, string>): string[] {
 	const now = snapshotContextHashes(paths);
 	const changed: string[] = [];
-	for (const p of paths) {
-		const nowHash = now.get(p);
-		const beforeHash = before.get(p);
-		if (nowHash && nowHash !== beforeHash) changed.push(p);
+	for (const [p, hash] of now) {
+		if (hash !== before.get(p)) changed.push(p);
 	}
 	return changed;
 }

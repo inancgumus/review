@@ -1,12 +1,64 @@
 /**
- * Review workhorse — shared fix prompt and state reconstruction for /loop:resume.
- * Used by review-fresh (and future review-incremental).
+ * Shared review prompts — overseer and workhorse prompts used by both review modes.
  */
 
-import { V_FIXES_COMPLETE, sanitize, CHANGES_STRIP_RE } from "./verdicts.js";
-import { expandContextPaths } from "./context.js";
-import { extractText } from "./session.js";
-import { matchVerdict } from "./verdicts.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, sanitize, CHANGES_STRIP_RE } from "./verdicts.js";
+import { readContextPaths, formatContextMarkdown } from "./context.js";
+
+// ── Overseer review prompt ──────────────────────────────
+
+export function buildReviewOverseerPrompt(p: {
+	focus: string;
+	round: number;
+	contextPaths: string[];
+	workhorseSummaries: string[];
+}): string {
+	const parts = [
+		`You are a code overseer. Review the code changes in this repository.`,
+		`Focus: ${p.focus}`,
+		"",
+		"Review the code by reading files and running git commands.",
+		"Before giving a verdict, inspect all relevant recent commits and changed files for the requested scope.",
+		"Do NOT stop after the first issue — keep checking until you are confident there are no other blocking issues in scope.",
+		"If the request spans multiple commits, identify every commit that needs fixing, not just the latest one.",
+		"RULES:",
+		"- You are the OVERSEER. Do NOT modify, edit, or write any files.",
+		"- Only use read and bash. Run git/grep/find/ls via bash.",
+		"- Review only the requested target. Ignore unrelated files unless directly relevant.",
+		"",
+		"For each issue you find:",
+		"1. **Commit** — the short SHA that introduced it (run `git log --oneline` to find it)",
+		"2. **File and line** — exact location",
+		"3. **What's wrong** — be specific, not vague",
+		"4. **How to fix it** — concrete suggestion the author can act on immediately",
+		"",
+		"Separate blocking issues (must fix) from nitpicks (optional).",
+		"",
+		"End your review with exactly one of:",
+		`${V_APPROVED}`,
+		`${V_CHANGES}`,
+	];
+
+	const overseerBlock = formatContextMarkdown(readContextPaths(p.contextPaths));
+	if (overseerBlock) parts.push(overseerBlock);
+
+	if (p.round > 1 && p.workhorseSummaries.length > 0) {
+		parts.push(
+			"",
+			"## Previous rounds",
+			"Below is the workhorse's SELF-REPORTED summary. Do NOT trust it. The workhorse may have missed things, introduced new bugs, or only partially fixed issues.",
+			"",
+			...p.workhorseSummaries,
+			"",
+			"## YOUR JOB THIS ROUND",
+			"You MUST read the actual source files and run git commands before giving a verdict.",
+			"A review with zero tool calls is a rubber-stamp — that is unacceptable.",
+			"Do a full holistic review — don't limit yourself to prior feedback.",
+		);
+	}
+
+	return parts.join("\n");
+}
 
 // ── Workhorse fix prompt ────────────────────────────────
 
@@ -62,84 +114,10 @@ export function buildReviewWorkhorsePrompt(overseerText: string, contextPaths: s
 		"When you have addressed ALL blocking issues (fixed or explained why you disagree),",
 		"end your response with exactly:",
 		`${V_FIXES_COMPLETE}`,
-		expandContextPaths(contextPaths),
 	);
 
+	const workhorseBlock = formatContextMarkdown(readContextPaths(contextPaths));
+	if (workhorseBlock) parts.push(workhorseBlock);
+
 	return parts.join("\n");
-}
-
-// ── State reconstruction for /loop:resume ───────────────
-
-export interface RecoveredState {
-	focus: string;
-	round: number;
-	phase: "oversee" | "workhorse";
-	lastOverseerText: string;
-	overseerLeafId: string | null;
-}
-
-export function reconstructState(ctx: any): RecoveredState | null {
-	const entries = ctx.sessionManager.getBranch();
-	let lastWorkhorseRound = 0;
-	let lastOverseerText = "";
-	let lastOverseerRound = 0;
-	let focus = "all recent code changes";
-	let overseerLeafId: string | null = null;
-
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const e = entries[i];
-
-		if (e.type === "custom_message" && (e as any).customType === "workhorse-summary") {
-			const text = extractText((e as any).content);
-			const m = text.match(/\[Workhorse Round (\d+)\]/);
-			if (m && lastWorkhorseRound === 0) lastWorkhorseRound = parseInt(m[1], 10);
-			continue;
-		}
-
-		if (e.type !== "message") continue;
-		const msg = e.message;
-		if (msg.role !== "assistant" || lastOverseerRound !== 0) continue;
-
-		const text = extractText(msg.content);
-		const verdict = matchVerdict(text);
-		if (verdict === "approved") return null;
-
-		if (verdict === "changes_requested") {
-			lastOverseerText = text;
-			overseerLeafId = e.id;
-			lastOverseerRound = findOverseerRound(entries, i);
-			focus = findFocus(entries, i) || focus;
-			break;
-		}
-	}
-
-	if (lastWorkhorseRound > 0 && lastWorkhorseRound >= lastOverseerRound) {
-		return { focus, round: lastWorkhorseRound + 1, phase: "oversee", lastOverseerText: "", overseerLeafId };
-	}
-	if (lastOverseerRound > 0 && lastOverseerText) {
-		return { focus, round: lastOverseerRound, phase: "workhorse", lastOverseerText, overseerLeafId };
-	}
-	return null;
-}
-
-function findOverseerRound(entries: any[], fromIdx: number): number {
-	for (let j = fromIdx - 1; j >= 0; j--) {
-		const e = entries[j];
-		if (e.type !== "message" || e.message.role !== "user") continue;
-		const text = extractText(e.message.content);
-		const m = text.match(/Re-review round (\d+)/);
-		return m ? parseInt(m[1], 10) : 1;
-	}
-	return 1;
-}
-
-function findFocus(entries: any[], fromIdx: number): string | null {
-	for (let j = fromIdx - 1; j >= 0; j--) {
-		const e = entries[j];
-		if (e.type !== "message" || e.message.role !== "user") continue;
-		const text = extractText(e.message.content);
-		const m = text.match(/Focus:\s*(.+)/);
-		return m ? m[1].trim() : null;
-	}
-	return null;
 }

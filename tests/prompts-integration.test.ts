@@ -116,11 +116,13 @@ function createHarness(cwdOverride?: string) {
 		},
 	};
 
-	loopExtension(pi as any);
-
-	pi.events.emit("loop:set-review-fn", () => {
+	let currentReviewFn: (...args: any[]) => any = () => {
 		if (reviewResults.length > 0) return reviewResults.shift()!;
 		return { approved: true, feedback: "" };
+	};
+
+	loopExtension(pi as any, {
+		reviewFn: (sha: string, cwd: string, editor?: string) => currentReviewFn(sha, cwd, editor),
 	});
 
 	function pushAssistant(text: string): void {
@@ -967,6 +969,66 @@ test("commit-backed manual /loop:resume works when ctx.cwd is non-git", async ()
 	} finally {
 		repo.cleanup();
 	}
+});
+
+// ── Group 8: Duplicate-subject unchanged detection ──────
+
+test("two commits with same subject both reported as unchanged", async () => {
+	const repo = createTempRepo();
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "same subject");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "same subject");
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check code", h.ctx);
+
+		h.pushAssistant([
+			`Issues in commits \`${sha1.slice(0, 7)}\` and \`${sha2.slice(0, 7)}\``,
+			"", V_CHANGES,
+		].join("\n"));
+		await h.fireAgentEnd();
+
+		// Workhorse does nothing
+		h.pushAssistant(`Done.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		// Both commits should be reported as unchanged (not just one due to subject dedup)
+		const warnings = h.logMessages.filter(m => m.includes("⚠️ Unchanged commits"));
+		assert.ok(warnings.length > 0, "should have unchanged warning");
+		const warningText = warnings.join(" ");
+		const matches = warningText.match(/same subject/g) || [];
+		assert.equal(matches.length, 2, `both commits should be listed, got: ${warningText}`);
+		await h.stopLoop();
+	} finally {
+		setLoopSetting("reviewMode", saved);
+		repo.cleanup();
+	}
+});
+
+// ── Group 9: Review/exec resume ─────────────────────────
+
+test("/loop:resume with review anchor resumes review loop", async () => {
+	const h = createHarness();
+	await h.commands.get("loop")!("check auth", h.ctx);
+
+	// Overseer says CHANGES_REQUESTED
+	h.pushAssistant(`Found issues.\n\n${V_CHANGES}`);
+	await h.fireAgentEnd();
+
+	// Workhorse is running — stop mid-loop
+	await h.stopLoop();
+
+	// Resume
+	h.notifications.length = 0;
+	const msgsBefore = h.userMessages.length;
+	await h.commands.get("loop:resume")!("", h.ctx);
+
+	const notifs = h.notifications.map(n => n.message).join(" ");
+	assert.doesNotMatch(notifs, /Nothing to resume/i, "should not say nothing to resume");
+	assert.ok(h.userMessages.length > msgsBefore, "resume should send a prompt");
+	await h.stopLoop();
 });
 
 test("plannotator-backed manual /loop:resume resolves repo cwd, not home", async () => {

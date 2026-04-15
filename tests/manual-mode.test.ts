@@ -125,20 +125,24 @@ function createHarness(cwdOverride?: string) {
 		},
 	};
 
-	loopExtension(pi as any);
-
 	// Mock review function — returns from reviewResults queue, default = approve
-	pi.events.emit("loop:set-review-fn", () => {
+	let currentReviewFn: (...args: any[]) => any = () => {
 		if (reviewResults.length > 0) return reviewResults.shift()!;
 		return { approved: true, feedback: "" };
+	};
+
+	loopExtension(pi as any, {
+		reviewFn: (sha: string, cwd: string, editor?: string) => currentReviewFn(sha, cwd, editor),
 	});
+
+	function setReviewFn(fn: (...args: any[]) => any) { currentReviewFn = fn; }
 
 	async function stopLoop(): Promise<void> {
 		const stop = commands.get("loop:stop");
 		if (stop) await stop("", ctx);
 	}
 
-	return { commands, events, ctx, pi, userMessages, selectQueue, selectCalls, inputQueue, reviewResults, stopLoop };
+	return { commands, events, ctx, pi, userMessages, selectQueue, selectCalls, inputQueue, reviewResults, setReviewFn, stopLoop };
 }
 
 test("/loop:manual command registers", () => {
@@ -387,7 +391,7 @@ test("/loop:manual records roundResults so /loop:log has data", async () => {
 		assert.ok(capturedFactory, "/loop:log should open the viewer");
 
 		// Render the log viewer and check it contains round data
-		const { loadPiAgent } = await import("../index.ts");
+		const { loadPiAgent } = await import("./test-helpers.ts");
 		const { initTheme } = await loadPiAgent();
 		initTheme();
 		const component = await capturedFactory(
@@ -635,6 +639,65 @@ test("/loop:manual recovers from in-progress rebase", async () => {
 	}
 });
 
+// ── SHA remap after amend ──────────────────────────────
+
+test("/loop:manual remaps SHA after workhorse amends commit", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "original", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+		const reviewedShas: string[] = [];
+
+		// Override review function to capture SHA args
+		h.setReviewFn((sha: string) => {
+			reviewedShas.push(sha);
+			if (reviewedShas.length === 1) {
+				return { approved: false, feedback: "fix error handling" };
+			}
+			return { approved: true, feedback: "" };
+		});
+
+		await h.commands.get("loop:manual")!(sha1, h.ctx);
+
+		// Workhorse prompt sent
+		assert.equal(h.userMessages.length, 1, "one workhorse prompt");
+
+		// Simulate workhorse amending the commit
+		writeFileSync(join(repo.cwd, "a.txt"), "fixed");
+		execSync("git add a.txt && git commit --amend --no-edit", { cwd: repo.cwd });
+		const newSha = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
+		assert.notEqual(newSha, sha1, "amend should create new SHA");
+
+		// Fire workhorse agent_end (FIXES_COMPLETE)
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-wh-remap",
+			type: "message",
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Fire overseer agent_end (APPROVED)
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-os-remap",
+			type: "message",
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait(300);
+
+		// Second reviewFn call should receive the NEW sha, not the old one
+		assert.equal(reviewedShas.length, 2, "reviewFn called twice");
+		assert.equal(reviewedShas[0], sha1, "first call uses original SHA");
+		assert.equal(reviewedShas[1], newSha, "second call uses remapped SHA after amend");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+// ── Resume ──────────────────────────────────────────────
+
 test("/loop:resume with plannotator anchor but no plannotator returns promptly", async () => {
 	const repo = createTempRepo();
 	try {
@@ -728,7 +791,7 @@ test("/loop:manual range a..b reviews all commits in range", async () => {
 
 		const h = createHarness(repo.cwd);
 		const reviewedShas: string[] = [];
-		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+		h.setReviewFn((sha: string) => {
 			reviewedShas.push(sha);
 			return { approved: true, feedback: "" };
 		});
@@ -754,7 +817,7 @@ test("/loop:manual range with feedback starts workhorse", async () => {
 
 		const h = createHarness(repo.cwd);
 		let callCount = 0;
-		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+		h.setReviewFn((sha: string) => {
 			callCount++;
 			if (callCount === 1) return { approved: false, feedback: "fix first commit" };
 			return { approved: true, feedback: "" };
@@ -781,7 +844,7 @@ test("/loop:manual remap with duplicate subjects picks correct commit", async ()
 
 		const h = createHarness(repo.cwd);
 		const reviewedShas: string[] = [];
-		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+		h.setReviewFn((sha: string) => {
 			reviewedShas.push(sha);
 			if (reviewedShas.length === 1) return { approved: false, feedback: "fix error handling" };
 			return { approved: true, feedback: "" };
@@ -815,6 +878,53 @@ test("/loop:manual remap with duplicate subjects picks correct commit", async ()
 		// Second reviewFn should get newSha, NOT sha1
 		assert.equal(reviewedShas.length, 2, "reviewFn called twice");
 		assert.equal(reviewedShas[1], newSha, "remaps to correct commit despite duplicate subject");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:manual first commit lost via remap, next commit still reviewed", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "first commit");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "second commit");
+
+		const h = createHarness(repo.cwd);
+		const reviewedShas: string[] = [];
+		h.setReviewFn((sha: string) => {
+			reviewedShas.push(sha);
+			if (reviewedShas.length === 1) return { approved: false, feedback: "fix first commit" };
+			return { approved: true, feedback: "" };
+		});
+
+		await h.commands.get("loop:manual")!(`${sha1}^..${sha2}`, h.ctx);
+
+		assert.equal(reviewedShas.length, 1, "first commit reviewed");
+		assert.equal(h.userMessages.length, 1, "workhorse prompt sent");
+
+		// Drop first commit (simulates squash that loses the commit)
+		execSync(`git rebase --onto ${sha1}^ ${sha1} HEAD`, { cwd: repo.cwd });
+
+		// Workhorse done
+		h.ctx.sessionManager.getEntries().push({
+			id: "wh-lost",
+			type: "message",
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Overseer approves
+		h.ctx.sessionManager.getEntries().push({
+			id: "os-lost",
+			type: "message",
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait(300);
+
+		// Second commit should still be reviewed after first was lost
+		assert.equal(reviewedShas.length, 2, "second commit reviewed after first was lost");
 	} finally {
 		repo.cleanup();
 	}

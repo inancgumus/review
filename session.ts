@@ -5,6 +5,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { sanitize } from "./verdicts.js";
 
 // ── StopError ───────────────────────────────────────────
@@ -14,6 +15,22 @@ export class StopError extends Error {
 		super("loop stopped");
 		this.name = "StopError";
 	}
+}
+
+// ── loop-state protocol (single owner) ──────────────────
+
+const LOOP_STATE_TYPE = "loop-state";
+
+interface LoopStateData {
+	round: number;
+}
+
+export function isLoopStateEntry(e: any): boolean {
+	return e.type === "custom" && e.customType === LOOP_STATE_TYPE;
+}
+
+export function loopStateRound(e: any): number {
+	return (e.data as LoopStateData).round ?? 0;
 }
 
 // ── Pure utility functions ──────────────────────────────
@@ -51,6 +68,23 @@ export function extractText(content: any): string {
 	return "";
 }
 
+/**
+ * Extract the opened directory from pi session entries.
+ * Pi passes the opened dir as the first user message.
+ */
+export function extractSessionCwd(entries?: any[]): string | null {
+	if (!entries) return null;
+	for (const e of entries) {
+		if (e.type !== "message" || e.message?.role !== "user") continue;
+		const text = extractText(e.message.content);
+		if (!text) continue;
+		const candidate = text.trim();
+		if (candidate.startsWith("/") && existsSync(candidate)) return candidate;
+		break;
+	}
+	return null;
+}
+
 // ── Session interface ───────────────────────────────────
 
 export interface Session {
@@ -63,9 +97,17 @@ export interface Session {
 	getLeafId(ctx: any): string;
 	blockEditors(): void;
 	restoreEditors(): void;
+	blockTools(): void;
+	unblockTools(): void;
 	log(text: string): void;
 	stop(): void;
+	clearStop(): void;
 	getBranch(ctx: any): any[];
+	saveModel(ctx: any): void;
+	restoreModel(ctx: any): Promise<boolean>;
+	getThinkingLevel(): string;
+	sendCustomMessage(msg: any, opts?: any): void;
+	appendCompletedRound(round: number): void;
 }
 
 // ── Editor env blocking ─────────────────────────────────
@@ -75,13 +117,28 @@ const EDITOR_VARS: Record<string, string> = { GIT_EDITOR: EDITOR_BLOCK, EDITOR: 
 
 // ── createSession ───────────────────────────────────────
 
+const BLOCKED_TOOLS = ["edit", "write"];
+const BLOCK_REASON = "Tools blocked — do not edit or write files. Only use read and bash (for git/grep/find/ls).";
+
 export function createSession(pi: ExtensionAPI): Session {
 	let anchorEntryId: string | null = null;
 	let savedEnv: Record<string, string | undefined> = {};
 	let pendingResolve: ((value: { text: string }) => void) | null = null;
 	let pendingReject: ((error: Error) => void) | null = null;
+	let stopped = false;
+	let savedModelStr = "";
+	let savedThinking = "";
+	let toolsBlocked = false;
 
-	function notifyAgentEnd(_event: any, ctx: any): void {
+	pi.on("tool_call", async (event: any) => {
+		if (!toolsBlocked) return;
+		if (BLOCKED_TOOLS.includes(event.toolName)) {
+			return { block: true, reason: BLOCK_REASON };
+		}
+	});
+
+	// Absorb pi's async event model — callers only see send() / setModel().
+	pi.on("agent_end", (_event: any, ctx: any) => {
 		if (!pendingResolve) return;
 		const { text, stopReason } = getLastAssistant(ctx);
 		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") {
@@ -95,7 +152,7 @@ export function createSession(pi: ExtensionAPI): Session {
 		pendingResolve = null;
 		pendingReject = null;
 		resolve({ text });
-	}
+	});
 
 	async function setModel(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
 		const model = findModel(modelStr, ctx);
@@ -106,6 +163,7 @@ export function createSession(pi: ExtensionAPI): Session {
 	}
 
 	function send(prompt: string, ctx?: any): Promise<{ text: string }> {
+		if (stopped) return Promise.reject(new StopError());
 		if (pendingResolve) throw new Error("send() called while previous send is still pending");
 		return new Promise<{ text: string }>((resolve, reject) => {
 			pendingResolve = resolve;
@@ -126,11 +184,16 @@ export function createSession(pi: ExtensionAPI): Session {
 	}
 
 	function stop(): void {
+		stopped = true;
 		if (pendingReject) {
 			pendingReject(new StopError());
 			pendingResolve = null;
 			pendingReject = null;
 		}
+	}
+
+	function clearStop(): void {
+		stopped = false;
 	}
 
 	function sessionFindAnchor(ctx: any): { id: string; data: any } | null {
@@ -170,6 +233,9 @@ export function createSession(pi: ExtensionAPI): Session {
 		return ctx.sessionManager.getBranch();
 	}
 
+	function blockTools(): void { toolsBlocked = true; }
+	function unblockTools(): void { toolsBlocked = false; }
+
 	function blockEditors(): void {
 		for (const [k, v] of Object.entries(EDITOR_VARS)) {
 			savedEnv[k] = process.env[k];
@@ -189,12 +255,50 @@ export function createSession(pi: ExtensionAPI): Session {
 		pi.sendMessage({ customType: "loop-log", content: sanitize(text), display: true }, { triggerTurn: false, deliverAs: "followUp" });
 	}
 
+	function saveModel(ctx: any): void {
+		savedModelStr = modelToStr(ctx.model);
+		savedThinking = pi.getThinkingLevel();
+	}
+
+	async function restoreModel(ctx: any): Promise<boolean> {
+		if (!savedModelStr) return true;
+		const model = findModel(savedModelStr, ctx);
+		if (!model) {
+			savedModelStr = "";
+			savedThinking = "";
+			return false;
+		}
+		if (!await pi.setModel(model)) return false;
+		pi.setThinkingLevel(savedThinking as any);
+		savedModelStr = "";
+		savedThinking = "";
+		return true;
+	}
+
+	function getThinkingLevel(): string {
+		return pi.getThinkingLevel();
+	}
+
+	function sendCustomMessage(msg: any, opts?: any): void {
+		pi.sendMessage(msg, { triggerTurn: false, ...opts });
+	}
+
+	function appendCompletedRound(round: number): void {
+		pi.appendEntry(LOOP_STATE_TYPE, { round } satisfies LoopStateData);
+	}
+
 	return {
-		setModel, send, notifyAgentEnd, stop,
+		setModel, send, stop, clearStop,
 		findAnchor: sessionFindAnchor, rememberAnchor,
 		navigateToEntry, navigateToAnchor,
 		getLeafId, getBranch,
 		blockEditors, restoreEditors,
+		blockTools, unblockTools,
 		log,
+		saveModel,
+		restoreModel,
+		getThinkingLevel,
+		sendCustomMessage,
+		appendCompletedRound,
 	};
 }

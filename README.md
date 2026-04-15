@@ -61,9 +61,9 @@ No comments means you approve. Comments get parsed into `file:line` references a
 |---|---|
 | `/loop [focus] [@path ...]` | Automatic review loop |
 | `/loop:exec [focus] [@path ...]` | Plan execution loop |
-| `/loop:manual [sha]` | You review, AI fixes |
+| `/loop:manual [sha\|range]` | You review, AI fixes |
 | `/loop:stop` | Stop and restore your model |
-| `/loop:resume` | Resume after restart |
+| `/loop:resume` | Resume manual review after restart |
 | `/loop:rounds <n>` | Change max rounds |
 | `/loop:log` | Browse past rounds |
 | `/loop:cfg` | Settings |

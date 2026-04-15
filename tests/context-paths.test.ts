@@ -115,11 +115,13 @@ function createHarness(cwdOverride?: string) {
 		},
 	};
 
-	loopExtension(pi as any);
-
-	pi.events.emit("loop:set-review-fn", () => {
+	let currentReviewFn: (...args: any[]) => any = () => {
 		if (reviewResults.length > 0) return reviewResults.shift()!;
 		return { approved: true, feedback: "" };
+	};
+
+	loopExtension(pi as any, {
+		reviewFn: (sha: string, cwd: string, editor?: string) => currentReviewFn(sha, cwd, editor),
 	});
 
 	function pushAssistant(text: string): void {
@@ -249,6 +251,7 @@ test("directory @paths detect changes in child files", async () => {
 
 		const round2 = h.userMessages[2];
 		assert.ok(round2, "round 2 prompt exists");
+		assert.match(round2, /a\.go/, "shows child file path");
 		assert.match(round2, /func a\(\) \{ fixed \}/, "includes updated child content");
 		await h.stopLoop();
 	} finally {
@@ -399,7 +402,6 @@ test("directory @path recurses deeper than 3 levels", async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
-
 test("@~/... tilde path is resolved as context", async () => {
 	const home = homedir();
 	const relName = `.loop-test-tilde-${Date.now()}.txt`;

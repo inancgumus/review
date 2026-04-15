@@ -2,30 +2,13 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const opts = (cwd: string): { cwd: string; encoding: "utf-8"; timeout: number } => ({ cwd, encoding: "utf-8", timeout: 10000 });
+const opts = (cwd: string): { cwd: string; encoding: "utf-8"; timeout: number; stdio: ["pipe", "pipe", "pipe"] } => ({ cwd, encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] });
 
-/**
- * Resolve the git toplevel. Tries cwd, process.cwd(), then extracts
- * the project path from the first user message (pi passes the opened dir as the first message).
- */
-function gitToplevel(cwd: string, sessionEntries?: any[]): string {
+/** Resolve the git toplevel for a given directory. */
+function gitToplevel(cwd: string): string {
 	for (const dir of [cwd, process.cwd()]) {
 		try { return execSync("git rev-parse --show-toplevel", opts(dir)).trim(); }
 		catch { /* not a git repo */ }
-	}
-	if (sessionEntries) {
-		for (const e of sessionEntries) {
-			if (e.type !== "message" || e.message?.role !== "user") continue;
-			const content = e.message.content;
-			const text = typeof content === "string" ? content : Array.isArray(content) ? content.find((c: any) => c.type === "text")?.text : null;
-			if (!text) continue;
-			const candidate = text.trim();
-			if (candidate.startsWith("/") && existsSync(candidate)) {
-				try { return execSync("git rev-parse --show-toplevel", opts(candidate)).trim(); }
-				catch { /* not a git repo */ }
-			}
-			break; // only check first user message
-		}
 	}
 	return cwd;
 }
@@ -67,12 +50,41 @@ function getCommitSubject(cwd: string, sha: string): string {
 	}
 }
 
+/** Resolve a ref (sha/branch/tag) to its full SHA, or null if unresolvable. */
+function resolveRef(cwd: string, ref: string): string | null {
+	try {
+		return execSync(`git rev-parse ${ref}`, opts(cwd)).trim();
+	} catch {
+		return null;
+	}
+}
+
+/** List full SHAs for commits in a range, oldest first. Empty on error. */
+function listCommits(cwd: string, range: string): string[] {
+	try {
+		return execSync(`git log --reverse --format=%H ${range}`, opts(cwd))
+			.trim().split("\n").filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
+/** Check if a commit object exists in the repo. */
+function commitExists(cwd: string, sha: string): boolean {
+	try {
+		execSync(`git cat-file -t ${sha}`, opts(cwd));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export interface GitStateIssue {
 	type: "rebase_in_progress" | "detached_head" | "dirty_tree";
 	message: string;
 }
 
-/** Check for git state issues that could break manual mode operations. */
+/** Check for git state issues that could break loop operations. */
 function checkGitState(cwd: string, expectedBranch?: string): GitStateIssue | null {
 	try {
 		const gitDir = execSync("git rev-parse --git-dir", opts(cwd)).trim();
@@ -83,7 +95,7 @@ function checkGitState(cwd: string, expectedBranch?: string): GitStateIssue | nu
 			return { type: "rebase_in_progress", message: "Rebase in progress" };
 		}
 
-		// Detached HEAD — workhorse needs to be on a branch
+		// Detached HEAD — agent needs to be on a branch
 		if (expectedBranch) {
 			try {
 				execSync("git symbolic-ref -q HEAD", opts(cwd));
@@ -128,7 +140,7 @@ function fixGitState(cwd: string, issue: GitStateIssue, targetBranch?: string): 
 // ── Fixup audit ─────────────────────────────────────────
 
 /**
- * Extract short commit SHAs (7-12 hex chars) referenced in overseer text.
+ * Extract short commit SHAs (7-12 hex chars) referenced in agent response text.
  * Looks near "commit" keywords, in backticks, in --fixup refs, and at line starts.
  */
 function extractTaggedSHAs(text: string): string[] {
@@ -234,7 +246,7 @@ function findSnapshotBase(cwd: string, shas: string[]): string | null {
 
 	try {
 		return execSync(`git rev-parse ${oldest}~1`, {
-			cwd, encoding: "utf-8", timeout: 5000,
+			cwd, encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
 		}).trim();
 	} catch {
 		// Root commit — no parent. Return "" so snapshotPatchIds includes all commits.
@@ -337,6 +349,9 @@ function remapCommit(cwd: string, oldSha: string): string | null {
 export const git = {
 	gitToplevel,
 	resolveRange,
+	resolveRef,
+	listCommits,
+	commitExists,
 	getCommitSubject,
 	checkGitState,
 	fixGitState,

@@ -5,23 +5,22 @@
 
 import type { Session } from "./session.js";
 import type { Status } from "./status.js";
-import type { RoundResult } from "./types.js";
+import type { RoundResult, Mode } from "./types.js";
 
-import { StopError } from "./session.js";
+import { StopError, extractSessionCwd } from "./session.js";
 import { loadConfig } from "./config.js";
 import { git } from "./git.js";
+import type { PlannotatorClient } from "./plannotator.js";
 import { reviewCommitInEditor } from "./diff-review.js";
-import { expandContextPaths } from "./context.js";
+import { readContextPaths, formatContextMarkdown } from "./context.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, matchVerdict, hasFixesComplete, stripVerdict, sanitize, CHANGES_STRIP_RE } from "./verdicts.js";
 import { formatDuration, createStatusTimer } from "./status.js";
-import { execSync, execFileSync } from "node:child_process";
-
-const GIT_OPTS: { encoding: "utf-8"; timeout: number; stdio: ["pipe", "pipe", "pipe"] } = { encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] };
 
 // ── State ───────────────────────────────────────────────
 
 export interface ManualState {
-	phase: "idle" | "reviewing" | "fixing" | "awaiting_feedback";
+	running: boolean;
+	paused: boolean;
 	round: number;
 	maxRounds: number;
 	roundResults: RoundResult[];
@@ -29,12 +28,7 @@ export interface ManualState {
 	loopStartedAt: number;
 }
 
-export interface ManualMode {
-	start(args: string, ctx: any): Promise<void>;
-	resume(ctx: any, anchor: { id: string; data: any }): Promise<void>;
-	stop(ctx: any): Promise<void>;
-	readonly state: ManualState;
-}
+export type ManualMode = Mode;
 
 // ── Prompt builders (module-local) ──────────────────────
 
@@ -138,17 +132,25 @@ function buildManualWorkhorsePrompt(overseerText: string, contextPaths: string[]
 		"When you have addressed ALL issues (fixed or explained why you disagree),",
 		"end your response with exactly:",
 		V_FIXES_COMPLETE,
-		expandContextPaths(contextPaths),
 	);
+
+	const block = formatContextMarkdown(readContextPaths(contextPaths));
+	if (block) parts.push(block);
 
 	return parts.join("\n");
 }
 
 // ── Factory ─────────────────────────────────────────────
 
-export function createManualMode(session: Session, status: Status): ManualMode {
+export interface ManualModeOpts {
+	reviewFn?: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string };
+	plannotator?: PlannotatorClient;
+}
+
+export function createManualMode(session: Session, status: Status, opts?: ManualModeOpts): ManualMode {
 	const state: ManualState = {
-		phase: "idle",
+		running: false,
+		paused: false,
 		round: 0,
 		maxRounds: 10,
 		roundResults: [],
@@ -165,45 +167,8 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 	let contextPaths: string[] = [];
 	let overseerLeafId: string | null = null;
 
-	// Review function (overridable via events for testing)
-	let reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = reviewCommitInEditor;
-	if (session.events?.on) {
-		session.events.on("loop:set-review-fn", (fn: any) => { if (typeof fn === "function") reviewFn = fn; });
-	}
-
-	// ── Plannotator ─────────────────────────────────
-
-	let plannotatorAvailable: boolean | null = null;
-
-	function detectPlannotator(cwd?: string): boolean {
-		const cfg = loadConfig(cwd || "");
-		if (!cfg.plannotator) { plannotatorAvailable = false; return false; }
-		if (plannotatorAvailable !== null) return plannotatorAvailable;
-		if (!session.events?.emit) { plannotatorAvailable = false; return false; }
-		let responded = false;
-		session.events.emit("plannotator:request", {
-			requestId: `detect-${Date.now()}`,
-			action: "review-status",
-			payload: { reviewId: "__loop_detect__" },
-			respond: () => { responded = true; },
-		});
-		plannotatorAvailable = responded;
-		return responded;
-	}
-
-	async function openPlannotator(ctx: any): Promise<{ approved: boolean; feedback?: string } | null> {
-		return new Promise<{ approved: boolean; feedback?: string } | null>((resolve) => {
-			session.events!.emit("plannotator:request", {
-				requestId: `loop-review-${Date.now()}`,
-				action: "code-review",
-				payload: { diffType: "branch", cwd: ctx.cwd },
-				respond: (response: any) => {
-					if (response?.status === "handled" && response.result) resolve(response.result);
-					else resolve(null);
-				},
-			});
-		});
-	}
+	const reviewFn: (sha: string, cwd: string, editor?: string) => { approved: boolean; feedback: string } = opts?.reviewFn ?? reviewCommitInEditor;
+	const plannotator = opts?.plannotator ?? null;
 
 	// ── Git recovery ────────────────────────────────
 
@@ -219,24 +184,6 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 
 	// ── Commit resolution ───────────────────────────
 
-	function resolveCommit(ref: string, cwd: string): { commit: string } | null {
-		try {
-			const out = execFileSync("git", ["rev-parse", ref], { ...GIT_OPTS, cwd });
-			return { commit: out.trim() };
-		} catch {
-			return null;
-		}
-	}
-
-	function resolveRangeArg(ref: string, cwd: string): string[] {
-		try {
-			const out = execFileSync("git", ["log", "--reverse", "--format=%H", ref], { ...GIT_OPTS, cwd });
-			return out.trim().split("\n").filter(Boolean);
-		} catch {
-			return [];
-		}
-	}
-
 	function isRangeArg(arg: string): boolean {
 		return arg.includes("..");
 	}
@@ -245,13 +192,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		let range: string;
 		try { range = git.resolveRange(ctx.cwd, ""); } catch { range = "HEAD~50..HEAD"; }
 
-		let branchShas: string[];
-		try {
-			branchShas = execSync(`git log --reverse --format=%H ${range}`, { ...GIT_OPTS, cwd: ctx.cwd }).trim().split("\n").filter(Boolean);
-		} catch {
-			ctx.ui.notify("Could not list commits", "error");
-			return null;
-		}
+		const branchShas = git.listCommits(ctx.cwd, range);
 		if (branchShas.length === 0) { ctx.ui.notify("No commits on this branch", "error"); return null; }
 
 		const items = branchShas.map(s => `${s.slice(0, 7)} ${git.getCommitSubject(ctx.cwd, s)}`);
@@ -264,11 +205,11 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 	// ── Status ──────────────────────────────────────
 
 	function updateStatus(ctx: any): void {
-		if (state.phase === "idle") return;
+		if (!state.running) return;
 		if (!statusPrefix) return;
 		let line = statusPrefix;
 		if (state.loopStartedAt) {
-			if (state.phase === "awaiting_feedback") {
+			if (state.paused) {
 				line += ` · ⏸ Total: ${formatDuration(status.elapsed())}`;
 			} else {
 				line += ` · ⏱ Total: ${formatDuration(status.elapsed())}`;
@@ -294,7 +235,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 	// ── Cleanup ─────────────────────────────────────
 
 	async function doCleanup(ctx: any): Promise<void> {
-		const wasRunning = state.phase !== "idle";
+		const wasRunning = state.running;
 
 		if (wasRunning) {
 			const gitIssue = git.checkGitState(ctx.cwd);
@@ -316,7 +257,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		const elapsed = status.elapsed();
 		status.stop();
 		if (elapsed > 1000) ctx.ui.notify(`Loop ended. ${formatDuration(elapsed)} elapsed.`, "info");
-		state.phase = "idle";
+		session.unblockTools(); state.running = false; state.paused = false;
 	}
 
 	// ── Setup state ─────────────────────────────────
@@ -330,13 +271,14 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		startIdx: number;
 		pauseTimer?: boolean;
 	}, ctx: any): boolean {
-		if (state.phase !== "idle") {
+		if (state.running) {
 			ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning");
 			return false;
 		}
 		session.saveModel(ctx);
 
-		state.phase = "awaiting_feedback";
+		state.running = true;
+		session.unblockTools(); state.paused = true;
 		state.round = 0;
 		state.maxRounds = cfg.maxRounds;
 		state.initialRequest = cfg.initialRequest;
@@ -348,6 +290,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		commitList = cfg.commits;
 		currentCommitIdx = cfg.startIdx;
 
+		session.clearStop();
 		status.start();
 		savedUserEditor = process.env.EDITOR || process.env.VISUAL;
 		session.blockEditors();
@@ -371,7 +314,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 	): Promise<{ send: Promise<{ text: string }> }> {
 		status.resume();
 		state.round = 1;
-		state.phase = "fixing";
+		session.unblockTools(); state.paused = false;
 		overseerLeafId = session.getLeafId(ctx);
 		if (!await session.navigateToAnchor(ctx)) {
 			ctx.ui.notify("No loop anchor found", "error");
@@ -408,7 +351,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 				({ text: fixText } = await firstSend);
 				firstSend = null;
 			} else {
-				state.phase = "fixing";
+				session.unblockTools(); state.paused = false;
 				overseerLeafId = session.getLeafId(ctx);
 				if (!await session.navigateToAnchor(ctx)) {
 					ctx.ui.notify("No loop anchor found", "error");
@@ -434,7 +377,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 			recordWorkhorse(round, summaryText);
 
 			// ── Overseer turn ──
-			state.phase = "reviewing";
+			session.blockTools(); state.paused = false;
 			const cfg2 = loadConfig(ctx.cwd);
 			if (!await session.setModel(cfg2.overseerModel, cfg2.overseerThinking, ctx)) {
 				ctx.ui.notify(`Model not available: ${cfg2.overseerModel}`, "error");
@@ -498,9 +441,19 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 			// Complete first inner loop (workhorse already sent from start/resume)
 			await innerLoop(firstSend, userFeedback, commitSha, ctx);
 
+			// Remap reviewed commit (workhorse may have amended/rebased)
+			if (commitSha) {
+				const remapped = git.remapCommit(ctx.cwd, commitSha);
+				if (remapped === null) {
+					commitList.splice(currentCommitIdx, 1);
+				} else if (remapped !== commitSha) {
+					commitList[currentCommitIdx] = remapped;
+				}
+			}
+
 			// After inner loop, continue commit review
 			while (commitList.length > 0) {
-				state.phase = "awaiting_feedback";
+				session.unblockTools(); state.paused = true;
 				const sha = commitList[currentCommitIdx];
 				if (!sha) break;
 
@@ -543,7 +496,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 			if (!recoverGitState(ctx)) return;
 
 			while (true) {
-				state.phase = "awaiting_feedback";
+				session.unblockTools(); state.paused = true;
 				const sha = commitList[currentCommitIdx];
 				if (!sha) break;
 
@@ -581,21 +534,26 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 
 	// ── Start ───────────────────────────────────────
 
+	function resolveRepoCwd(ctx: any): string {
+		const sessionDir = extractSessionCwd(ctx.sessionManager?.getEntries?.());
+		return git.gitToplevel(sessionDir || ctx.cwd);
+	}
+
 	async function start(args: string, ctx: any): Promise<void> {
-		plannotatorAvailable = null;
-		ctx.cwd = git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
+		plannotator?.reset();
+		ctx.cwd = resolveRepoCwd(ctx);
 		const cfg = loadConfig(ctx.cwd);
 		const trimmedArgs = (args || "").trim();
 
 		// ── Plannotator path ────────────────────────
-		if (detectPlannotator(ctx.cwd) && !trimmedArgs) {
+		if (cfg.plannotator && plannotator?.isAvailable() && !trimmedArgs) {
 			if (!setupState({
 				focus: "manual review", initialRequest: "manual review",
 				contextPaths: [], maxRounds: cfg.maxRounds,
 				commits: [], startIdx: 0,
 			}, ctx)) return;
 			ctx.ui.notify("Opening plannotator...", "info");
-			const result = await openPlannotator(ctx);
+			const result = await plannotator.openCodeReview(ctx.cwd);
 			if (!result || result.approved) {
 				ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
 				await doCleanup(ctx);
@@ -620,18 +578,18 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 
 		if (trimmedArgs && isRangeArg(trimmedArgs)) {
 			// Range: a..b or a...b
-			commits = resolveRangeArg(trimmedArgs, ctx.cwd);
+			commits = git.listCommits(ctx.cwd, trimmedArgs);
 			if (commits.length === 0) { ctx.ui.notify(`Could not resolve range: ${trimmedArgs}`, "error"); return; }
 		} else if (trimmedArgs) {
-			const resolved = resolveCommit(trimmedArgs, ctx.cwd);
+			const resolved = git.resolveRef(ctx.cwd, trimmedArgs);
 			if (!resolved) { ctx.ui.notify(`Could not resolve: ${trimmedArgs}`, "error"); return; }
-			commits = [resolved.commit];
+			commits = [resolved];
 		} else {
 			const picked = await pickSingleCommit(ctx);
 			if (!picked) return;
-			const resolved = resolveCommit(picked, ctx.cwd);
+			const resolved = git.resolveRef(ctx.cwd, picked);
 			if (!resolved) { ctx.ui.notify(`Could not resolve: ${picked}`, "error"); return; }
-			commits = [resolved.commit];
+			commits = [resolved];
 		}
 
 		const label = commits.length === 1 ? commits[0].slice(0, 7) : `${commits.length} commits`;
@@ -647,7 +605,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		if (!recoverGitState(ctx)) { await doCleanup(ctx); return; }
 
 		while (true) {
-			state.phase = "awaiting_feedback";
+			session.unblockTools(); state.paused = true;
 			const sha = commitList[currentCommitIdx];
 			if (!sha) {
 				ctx.ui.notify(`All ${commitList.length} commit(s) approved`, "success");
@@ -686,17 +644,15 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 	// ── Resume ──────────────────────────────────────
 
 	async function resume(ctx: any, anchor: { id: string; data: any }): Promise<void> {
-		plannotatorAvailable = null;
-		ctx.cwd = anchor.data.cwd || git.gitToplevel(ctx.cwd, ctx.sessionManager?.getEntries?.());
+		plannotator?.reset();
+		ctx.cwd = anchor.data.cwd || resolveRepoCwd(ctx);
 		const cfg = loadConfig(ctx.cwd);
 		const commits: string[] = Array.isArray(anchor.data.commitList) ? anchor.data.commitList : [];
 
 		// Commit-backed resume
 		if (commits.length > 0) {
 			for (const sha of commits) {
-				try {
-					execFileSync("git", ["cat-file", "-t", sha], { ...GIT_OPTS, cwd: ctx.cwd });
-				} catch {
+				if (!git.commitExists(ctx.cwd, sha)) {
 					ctx.ui.notify(`Commit ${sha.slice(0, 7)} no longer exists — cannot resume`, "error");
 					return;
 				}
@@ -717,7 +673,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		}
 
 		// Plannotator-backed resume
-		if (!detectPlannotator(ctx.cwd)) {
+		if (!cfg.plannotator || !plannotator?.isAvailable()) {
 			ctx.ui.notify("Plannotator is no longer available — cannot resume", "error");
 			return;
 		}
@@ -729,7 +685,7 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 			commits: [], startIdx: 0,
 		}, ctx)) return;
 		ctx.ui.notify("Resuming manual review...", "info");
-		const result = await openPlannotator(ctx);
+		const result = await plannotator!.openCodeReview(ctx.cwd);
 		if (!result || result.approved) {
 			ctx.ui.notify(result?.approved ? "Approved" : "Dismissed", "info");
 			await doCleanup(ctx);
@@ -760,6 +716,9 @@ export function createManualMode(session: Session, status: Status): ManualMode {
 		start,
 		resume,
 		stop,
-		get state() { return state; },
+		isRunning: () => state.running,
+		getMaxRounds: () => state.maxRounds,
+		setMaxRounds: (n: number) => { state.maxRounds = n; },
+		logSnapshot: () => state.initialRequest ? { initialRequest: state.initialRequest, roundResults: state.roundResults, loopStartedAt: state.loopStartedAt } : null,
 	};
 }
