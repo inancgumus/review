@@ -18,11 +18,6 @@ export class StopError extends Error {
 
 // ── Pure utility functions ──────────────────────────────
 
-/** Strip C0/C1/DEL/zero-width/line separator chars. */
-export function sanitize(text: string): string {
-	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
-}
-
 export function modelToStr(model: any): string {
 	if (!model) return "";
 	return `${model.provider}/${model.id}`;

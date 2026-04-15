@@ -6,17 +6,14 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { LoopMode, ReviewMode, RoundResult } from "./types.js";
 
-type Verdict = "approved" | "changes_requested" | null;
 import { loadConfig } from "./config.js";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
-import { createHash } from "node:crypto";
 import { promptSets } from "./prompts.js";
-import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
+import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, matchVerdict, hasFixesComplete, stripVerdict, sanitize } from "./verdicts.js";
+import { parseArgs, snapshotContextHashes, findChangedContextPaths } from "./context.js";
+import { formatDuration, formatTime, createStatus } from "./status.js";
 import { git } from "./git.js";
 import { createManualMode } from "./manual.js";
-import { createSession, findModel, modelToStr, getLastAssistant, extractText, sanitize } from "./session.js";
+import { createSession, findModel, modelToStr, getLastAssistant, extractText } from "./session.js";
 
 // ── Mode hooks (engine-private, not exported) ────────
 
@@ -58,7 +55,6 @@ interface LoopState {
 	commitList: string[];
 	currentCommitIdx: number;
 	userFeedback: string;
-	pausedElapsed: number;
 }
 
 function newState(overrides: Partial<LoopState> = {}): LoopState {
@@ -87,117 +83,11 @@ function newState(overrides: Partial<LoopState> = {}): LoopState {
 		commitList: [],
 		currentCommitIdx: 0,
 		userFeedback: "",
-		pausedElapsed: 0,
 		...overrides,
 	};
 }
 
-// ── Verdict parsing (absorbed from verdicts.ts) ───────
 
-const APPROVED_RE = /\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}APPROVED\*{0,2}/i;
-const CHANGES_RE = /\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}CHANGES_REQUESTED\*{0,2}/i;
-const FIXES_COMPLETE_RE = /FIXES_COMPLETE/i;
-const VERDICT_STRIP_RE = /\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}(APPROVED|CHANGES_REQUESTED)\*{0,2}/gi;
-
-function matchVerdict(text: string): Verdict {
-	if (APPROVED_RE.test(text)) return "approved";
-	if (CHANGES_RE.test(text)) return "changes_requested";
-	return null;
-}
-
-function hasFixesComplete(text: string): boolean {
-	return FIXES_COMPLETE_RE.test(text);
-}
-
-function stripVerdict(text: string): string {
-	return text
-		.replace(VERDICT_STRIP_RE, "")
-		.replace(FIXES_COMPLETE_RE, "")
-		.trim();
-}
-
-// ── Context file hashing (moved from prompts.ts — engine concern, not prompt concern) ──
-
-const MAX_FILE_SIZE = 200_000;
-const MAX_DIR_DEPTH = 3;
-
-function readFileContent(filePath: string): string | null {
-	try {
-		const resolved = expandTilde(filePath);
-		const stat = fs.statSync(resolved);
-		if (stat.isFile()) {
-			if (stat.size > MAX_FILE_SIZE)
-				return `[${filePath}: skipped, ${Math.round(stat.size / 1024)}KB > 50KB limit]`;
-			return `### ${filePath}\n\`\`\`\n${fs.readFileSync(resolved, "utf-8")}\n\`\`\``;
-		}
-		if (stat.isDirectory()) return readDirContent(resolved, filePath, 0);
-	} catch { /* skip */ }
-	return null;
-}
-
-function readDirContent(dirPath: string, displayPath: string, depth: number): string {
-	if (depth >= MAX_DIR_DEPTH) return `[${displayPath}: max depth reached]`;
-	const parts: string[] = [];
-	for (const entry of safeDirEntries(dirPath)) {
-		if (entry.name.startsWith(".")) continue;
-		const full = path.join(dirPath, entry.name);
-		const display = path.join(displayPath, entry.name);
-		const content = entry.isFile()
-			? readFileContent(full)
-			: entry.isDirectory()
-				? readDirContent(full, display, depth + 1)
-				: null;
-		if (content) parts.push(content);
-	}
-	return parts.join("\n\n");
-}
-
-function safeDirEntries(dirPath: string): fs.Dirent[] {
-	try { return fs.readdirSync(dirPath, { withFileTypes: true }); }
-	catch { return []; }
-}
-
-function snapshotContextHashes(paths: string[]): Map<string, string> {
-	const map = new Map<string, string>();
-	for (const p of paths) {
-		const content = readFileContent(p);
-		if (content) {
-			map.set(p, createHash("sha256").update(content).digest("hex"));
-		}
-	}
-	return map;
-}
-
-function findChangedContextPaths(paths: string[], before: Map<string, string>): string[] {
-	const now = snapshotContextHashes(paths);
-	const changed: string[] = [];
-	for (const p of paths) {
-		const nowHash = now.get(p);
-		const beforeHash = before.get(p);
-		if (nowHash && nowHash !== beforeHash) changed.push(p);
-	}
-	return changed;
-}
-
-// ── Arg parsing (absorbed from context.ts) ─────────────
-
-function expandTilde(p: string): string {
-	if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
-	return p;
-}
-
-function parseArgs(args: string, cwd: string): { focus: string; contextPaths: string[] } {
-	const contextPaths: string[] = [];
-	const remaining: string[] = [];
-	for (const token of args.split(/\s+/)) {
-		if (!token.startsWith("@")) { remaining.push(token); continue; }
-		const rawPath = token.slice(1);
-		const resolved = path.isAbsolute(rawPath) ? expandTilde(rawPath) : path.join(cwd, rawPath);
-		try { fs.statSync(resolved); contextPaths.push(resolved); }
-		catch { remaining.push(token); }
-	}
-	return { focus: remaining.join(" ").trim() || "all recent code changes", contextPaths };
-}
 
 
 
@@ -279,21 +169,6 @@ function findFocus(entries: any[], fromIdx: number): string | null {
 
 
 
-// ── Formatting ──────────────────────────────────────────
-
-function formatDuration(ms: number): string {
-	const s = Math.floor(ms / 1000);
-	const m = Math.floor(s / 60);
-	const h = Math.floor(m / 60);
-	if (h > 0) return `${h}h ${m % 60}m`;
-	if (m > 0) return `${m}m ${s % 60}s`;
-	return `${s}s`;
-}
-
-function formatTime(ts: number): string {
-	return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
-}
-
 // ── Engine ──────────────────────────────────────────────
 
 export interface Engine {
@@ -314,34 +189,29 @@ export interface Engine {
 
 export function createEngine(pi: ExtensionAPI): Engine {
 	const session = createSession(pi);
+	const status = createStatus();
 	let state: LoopState = newState();
 	let loopCommandCtx: any | null = null;
 	let savedUserEditor: string | undefined;
 	let statusPrefix = "";
 	let statusTimer: ReturnType<typeof setInterval> | null = null;
-	let pauseStartedAt = 0;
 	let modeHooks: ModeHooks = {};
-
-	function totalElapsed(): number {
-		if (!state.loopStartedAt) return 0;
-		return Date.now() - state.loopStartedAt - state.pausedElapsed;
-	}
 
 	function updateStatus(ctx: any): void {
 		if (state.phase === "idle") return;
 		const now = Date.now();
 		const prefix = statusPrefix;
 		if (!prefix) return;
-		let status = prefix;
-		if (state.roundStartedAt) status += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
+		let line = prefix;
+		if (state.roundStartedAt) line += ` · ⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)}`;
 		if (state.loopStartedAt) {
 			if (state.phase === "awaiting_feedback") {
-				status += ` · ⏸ Total: ${formatDuration(totalElapsed())}`;
+				line += ` · ⏸ Total: ${formatDuration(status.elapsed())}`;
 			} else {
-				status += ` · ⏱ Total: ${formatDuration(totalElapsed())}`;
+				line += ` · ⏱ Total: ${formatDuration(status.elapsed())}`;
 			}
 		}
-		ctx.ui.setStatus("loop", status);
+		ctx.ui.setStatus("loop", line);
 	}
 
 	function startStatusTimer(ctx: any): void {
@@ -377,19 +247,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 
 
-	// ── Time tracking ───────────────────────────
-
-	function pauseTimer(): void {
-		if (pauseStartedAt === 0) pauseStartedAt = Date.now();
-	}
-
-	function resumeTimer(): void {
-		if (pauseStartedAt > 0) {
-			state.pausedElapsed += Date.now() - pauseStartedAt;
-			pauseStartedAt = 0;
-		}
-	}
-
 	// ── Manual mode (6 high-level methods, no primitives) ──
 
 	const manual = createManualMode({
@@ -412,8 +269,9 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				originalThinking: pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
 			});
+			status.start();
 			modeHooks = {
-				onApproved: (innerCtx: any) => { pauseTimer(); onInnerLoopDone(innerCtx); },
+				onApproved: (innerCtx: any) => { status.pause(); onInnerLoopDone(innerCtx); },
 				onChangesRequested: () => { state.round++; },
 				onStop: (stopCtx: any) => {
 					const gitIssue = git.checkGitState(stopCtx.cwd);
@@ -439,7 +297,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			});
 			savedUserEditor = process.env.EDITOR || process.env.VISUAL;
 			session.blockEditors();
-			if (cfg.pauseTimer) pauseTimer();
+			if (cfg.pauseTimer) status.pause();
 			startStatusTimer(ctx);
 			return true;
 		},
@@ -449,7 +307,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			state.workhorseSummaries = [];
 			state.overseerLeafId = null;
 			state.roundStartedAt = Date.now();
-			resumeTimer();
+			status.resume();
 			const text = commitSha ? `[COMMIT:${commitSha}]\n${feedback}` : feedback;
 			return (async () => {
 				if (!await session.navigateToAnchor(ctx)) { ctx.ui.notify("No loop anchor found", "error"); await stopLoop(ctx); return; }
@@ -603,12 +461,11 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 		if (wasRunning && modeHooks.onStop) modeHooks.onStop(ctx);
 
-		resumeTimer();
+		status.resume();
 		stopStatusTimer();
 		modeHooks = {};
 		state.overseerLeafId = null;
 		loopCommandCtx = null;
-		pauseStartedAt = 0;
 		ctx.ui.setStatus("loop", "");
 		session.restoreEditors();
 		if (!wasRunning || !state.originalModelStr) return;
@@ -617,7 +474,8 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		if (!model) { ctx.ui.notify(`Could not restore model: ${state.originalModelStr}`, "error"); return; }
 		await pi.setModel(model);
 		pi.setThinkingLevel(state.originalThinking as any);
-		const elapsed = totalElapsed();
+		const elapsed = status.elapsed();
+		status.stop();
 		if (elapsed > 1000) ctx.ui.notify(`Loop ended. ${formatDuration(elapsed)} elapsed.`, "info");
 	}
 
@@ -633,7 +491,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			if (rr) rr.endedAt = now;
 
 			if (modeHooks.onApproved) {
-				deferIf("reviewing", () => { pauseTimer(); modeHooks.onApproved!(ctx); });
+				deferIf("reviewing", () => { status.pause(); modeHooks.onApproved!(ctx); });
 				return;
 			}
 
@@ -689,6 +547,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 		});
+		status.start();
 		session.log(`📝 Request · Started: ${formatTime(state.loopStartedAt)}\n${state.initialRequest}`);
 		session.rememberAnchor(ctx, { focus: state.focus, initialRequest: state.initialRequest, contextPaths: state.contextPaths, mode: state.mode, cwd: ctx.cwd });
 		savedUserEditor = process.env.EDITOR || process.env.VISUAL;
@@ -727,6 +586,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			overseerLeafId: recovered.overseerLeafId,
 			loopStartedAt: Date.now(),
 		});
+		status.start();
 		savedUserEditor = process.env.EDITOR || process.env.VISUAL;
 		session.blockEditors();
 		startStatusTimer(ctx);

@@ -356,3 +356,64 @@ test("only modified files are reported as changed", async () => {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("directory @path shows child file paths in initial prompt", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
+	try {
+		const sub = join(dir, "pkg");
+		mkdirSync(sub);
+		writeFileSync(join(sub, "a.go"), "func a() {}");
+		writeFileSync(join(sub, "b.go"), "func b() {}");
+
+		const h = createHarness();
+		await h.commands.get("loop")!(`check stuff @${sub}`, h.ctx);
+
+		const prompt = h.userMessages[0];
+		assert.ok(prompt, "overseer prompt sent");
+		assert.match(prompt, /a\.go/, "shows child file path a.go");
+		assert.match(prompt, /b\.go/, "shows child file path b.go");
+		assert.match(prompt, /func a\(\)/, "includes content of a.go");
+		assert.match(prompt, /func b\(\)/, "includes content of b.go");
+		await h.stopLoop();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("directory @path recurses deeper than 3 levels", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "ctx-paths-"));
+	try {
+		const deep = join(dir, "a", "b", "c", "d");
+		mkdirSync(deep, { recursive: true });
+		writeFileSync(join(deep, "x.txt"), "deep file content");
+
+		const h = createHarness();
+		await h.commands.get("loop")!(`check stuff @${dir}`, h.ctx);
+
+		const prompt = h.userMessages[0];
+		assert.ok(prompt, "overseer prompt sent");
+		assert.match(prompt, /x\.txt/, "shows deeply nested file path");
+		assert.match(prompt, /deep file content/, "includes deeply nested file content");
+		await h.stopLoop();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("@~/... tilde path is resolved as context", async () => {
+	const home = homedir();
+	const relName = `.loop-test-tilde-${Date.now()}.txt`;
+	const fullPath = join(home, relName);
+	writeFileSync(fullPath, "tilde content");
+	try {
+		const h = createHarness();
+		await h.commands.get("loop")!(`check stuff @~/${relName}`, h.ctx);
+
+		const prompt = h.userMessages[0];
+		assert.ok(prompt, "overseer prompt sent");
+		assert.match(prompt, /tilde content/, "prompt includes tilde file content");
+		await h.stopLoop();
+	} finally {
+		unlinkSync(fullPath);
+	}
+});
