@@ -14,7 +14,6 @@ import type { Session } from "./session.js";
 import type { Status } from "./status.js";
 import { formatDuration, formatTime } from "./status.js";
 import { git } from "./git.js";
-import { createManualMode } from "./manual.js";
 import { findModel, modelToStr, getLastAssistant } from "./session.js";
 import { reconstructState } from "./review-workhorse.js";
 
@@ -109,7 +108,6 @@ export interface Engine {
 		readonly initialRequest: string;
 		readonly loopStartedAt: number;
 	};
-	startManual(args: string, ctx: any): Promise<void>;
 }
 
 export function createEngine(pi: ExtensionAPI, session: Session, status: Status): Engine {
@@ -170,99 +168,7 @@ export function createEngine(pi: ExtensionAPI, session: Session, status: Status)
 
 
 
-	// ── Manual mode (6 high-level methods, no primitives) ──
 
-	const manual = createManualMode({
-		pi,
-		initSession(cfg, onInnerLoopDone, ctx) {
-			if (state.phase !== "idle") { ctx.ui.notify("Loop already running -- /loop:stop to cancel", "warning"); return false; }
-			loopCommandCtx = ctx;
-			state = newState({
-				mode: "manual",
-				phase: "awaiting_feedback",
-				round: 0,
-				reviewMode: "incremental",
-				focus: cfg.focus,
-				initialRequest: cfg.initialRequest,
-				contextPaths: cfg.contextPaths,
-				maxRounds: cfg.maxRounds,
-				commitList: cfg.commits,
-				currentCommitIdx: cfg.startIdx,
-				originalModelStr: modelToStr(ctx.model),
-				originalThinking: pi.getThinkingLevel(),
-				loopStartedAt: Date.now(),
-			});
-			status.start();
-			modeHooks = {
-				onApproved: (innerCtx: any) => { status.pause(); onInnerLoopDone(innerCtx); },
-				onChangesRequested: () => { state.round++; },
-				onStop: (stopCtx: any) => {
-					const gitIssue = git.checkGitState(stopCtx.cwd);
-					if (gitIssue && !git.fixGitState(stopCtx.cwd, gitIssue) && gitIssue.type !== "dirty_tree") {
-						stopCtx.ui.notify(`Git: ${gitIssue.message} -- fix manually`, "warning");
-					}
-				},
-				getAnchorExtras: () => ({
-					commitList: state.commitList,
-					currentCommitIdx: state.currentCommitIdx,
-				}),
-				getPromptExtras: () => ({
-					userFeedback: state.userFeedback,
-					commitSha: state.commitList.length > 0 ? state.commitList[state.currentCommitIdx] : undefined,
-				}),
-				suppressRoundIncrement: true,
-				suppressLogs: true,
-			};
-			session.rememberAnchor(ctx, {
-				focus: state.focus, initialRequest: state.initialRequest,
-				contextPaths: state.contextPaths, mode: state.mode, cwd: ctx.cwd,
-				...modeHooks.getAnchorExtras?.() ?? {},
-			});
-			savedUserEditor = process.env.EDITOR || process.env.VISUAL;
-			session.blockEditors();
-			if (cfg.pauseTimer) status.pause();
-			startStatusTimer(ctx);
-			return true;
-		},
-		beginInnerRound(feedback, commitSha, ctx) {
-			state.userFeedback = feedback;
-			state.round = 1;
-			state.workhorseSummaries = [];
-			state.overseerLeafId = null;
-			state.roundStartedAt = Date.now();
-			status.resume();
-			const text = commitSha ? `[COMMIT:${commitSha}]\n${feedback}` : feedback;
-			return (async () => {
-				if (!await session.navigateToAnchor(ctx)) { ctx.ui.notify("No loop anchor found", "error"); await stopLoop(ctx); return; }
-				await startWorkhorse(text, ctx);
-			})();
-		},
-		prepareForReview(ctx) {
-			state.phase = "awaiting_feedback";
-			const sha = state.commitList[state.currentCommitIdx];
-			if (sha) {
-				const subject = git.getCommitSubject(ctx.cwd, sha);
-				statusPrefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
-				updateStatus(ctx);
-			}
-			return { sha, savedEditor: savedUserEditor };
-		},
-		advanceCommit(ctx) {
-			if (state.currentCommitIdx >= state.commitList.length - 1) {
-				ctx.ui.notify(`All ${state.commitList.length} commit(s) approved`, "success");
-				return false;
-			}
-			state.currentCommitIdx++;
-			return true;
-		},
-		stop: stopLoop,
-		getCommandCtx: () => loopCommandCtx,
-	});
-
-	// Mode-specific resume handlers — generic dispatch, no hard-coded mode checks.
-	const modeResumers: Record<string, (ctx: any, anchor: any) => Promise<void>> = {
-		manual: manual.resume,
-	};
 
 	// ── Transitions ─────────────────────────────────────
 
@@ -485,13 +391,6 @@ export function createEngine(pi: ExtensionAPI, session: Session, status: Status)
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
 		const anchor = session.findAnchor(ctx);
 
-		// Delegate to mode-specific resumer if one is registered
-		const resumer = anchor?.data?.mode ? modeResumers[anchor.data.mode] : undefined;
-		if (resumer) {
-			await resumer(ctx, anchor);
-			return;
-		}
-
 		// Restore cwd from anchor (pi can set ctx.cwd to ~ on restart)
 		if (anchor?.data?.cwd) ctx.cwd = anchor.data.cwd;
 
@@ -538,6 +437,5 @@ export function createEngine(pi: ExtensionAPI, session: Session, status: Status)
 		stop: stopLoop,
 		resume: resumeLoop,
 		onAgentEnd,
-		startManual: manual.start,
 	};
 }

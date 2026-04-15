@@ -344,6 +344,65 @@ test("/loop:manual inner loop completion ends the loop", async () => {
 	}
 });
 
+test("/loop:manual records roundResults so /loop:log has data", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha = addCommit(repo.cwd, "a.txt", "hello", "fix stuff");
+
+		const h = createHarness(repo.cwd);
+		const notifications: Array<{ message: string; level: string }> = [];
+		h.ctx.ui.notify = (msg: string, level: string) => { notifications.push({ message: msg, level }); };
+
+		// One round: workhorse fixes, overseer approves
+		h.reviewResults.push({ approved: false, feedback: "fix error handling" });
+
+		await h.commands.get("loop:manual")!(sha, h.ctx);
+
+		// Workhorse completes
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-wh-rr",
+			type: "message",
+			message: { role: "assistant", content: `Fixed the error handling.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Overseer approves
+		h.ctx.sessionManager.getEntries().push({
+			id: "assistant-os-rr",
+			type: "message",
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait(400);
+
+		// Capture the factory passed to ctx.ui.custom by /loop:log
+		let capturedFactory: any = null;
+		h.ctx.ui.custom = async (factory: any) => { capturedFactory = factory; };
+		notifications.length = 0;
+		await h.commands.get("loop:log")!("", h.ctx);
+
+		const noRounds = notifications.find(n => /No loop rounds/i.test(n.message));
+		assert.ok(!noRounds, "should not say no loop rounds after a manual run");
+		assert.ok(capturedFactory, "/loop:log should open the viewer");
+
+		// Render the log viewer and check it contains round data
+		const { loadPiAgent } = await import("../index.ts");
+		const { initTheme } = await loadPiAgent();
+		initTheme();
+		const component = await capturedFactory(
+			{ requestRender() {}, terminal: { rows: 40 } },
+			h.ctx.ui.theme, {}, () => {},
+		);
+		const rendered = component.render(120).join("\n");
+		assert.match(rendered, /1 round/, "log viewer shows 1 round");
+		assert.match(rendered, /Overseer|overseer/i, "log viewer has overseer entry");
+		assert.match(rendered, /Workhorse|workhorse/i, "log viewer has workhorse entry");
+	} finally {
+		repo.cleanup();
+	}
+});
+
 test("/loop:manual single commit picker (no args)", async () => {
 	const repo = createTempRepo();
 	try {
@@ -473,9 +532,9 @@ test("/loop:manual feature branch picker shows only branch commits", async () =>
 		assert.equal(h.selectCalls.length, 1, "picker called once");
 		const items = h.selectCalls[0].items as string[];
 		assert.equal(items.length, 2, "picker shows exactly 2 feature branch commits");
-		// git log order is newest first
-		assert.match(items[0], /feature-B/, "first item is newest commit");
-		assert.match(items[1], /feature-A/, "second item is oldest commit");
+		// oldest-first (chronological) order
+		assert.match(items[0], /feature-A/, "first item is oldest commit");
+		assert.match(items[1], /feature-B/, "second item is newest commit");
 		// init commit from main should NOT appear
 		const all = items.join(" ");
 		assert.doesNotMatch(all, /init/, "init commit from main not in picker");
@@ -493,17 +552,17 @@ test("/loop:manual commit picker shows chronological order", async () => {
 		const shaC = addCommit(repo.cwd, "c.txt", "ccc", "commit-C");
 
 		const h = createHarness(repo.cwd);
-		h.selectQueue.push(`${shaC.slice(0, 7)} commit-C`);
+		h.selectQueue.push(`${shaA.slice(0, 7)} commit-A`);
 
 		await h.commands.get("loop:manual")!("", h.ctx);
 
 		assert.equal(h.selectCalls.length, 1, "picker called");
 		const items = h.selectCalls[0].items as string[];
 		assert.equal(items.length, 3, "3 commits in picker");
-		// git log: newest first
-		assert.match(items[0], /commit-C/, "newest first");
+		// chronological (oldest first)
+		assert.match(items[0], /commit-A/, "oldest first");
 		assert.match(items[1], /commit-B/, "middle");
-		assert.match(items[2], /commit-A/, "oldest last");
+		assert.match(items[2], /commit-C/, "newest last");
 	} finally {
 		repo.cleanup();
 	}
@@ -652,6 +711,110 @@ test("/loop:resume with stale plannotator cache does not hang", async () => {
 		assert.notEqual(result, "timeout", "resume must not hang with stale plannotator cache");
 		const all = notifyMsgs.join(" ");
 		assert.match(all, /no longer available/i, "should notify plannotator is gone");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+// ── Range support ────────────────────────────────────────
+
+test("/loop:manual range a..b reviews all commits in range", async () => {
+	const repo = createTempRepo();
+	try {
+		execSync("git checkout -b feature", { cwd: repo.cwd });
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "first feature");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "second feature");
+		const sha3 = addCommit(repo.cwd, "c.txt", "ccc", "third feature");
+
+		const h = createHarness(repo.cwd);
+		const reviewedShas: string[] = [];
+		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+			reviewedShas.push(sha);
+			return { approved: true, feedback: "" };
+		});
+
+		// Use range: sha1^..sha3 should include sha1, sha2, sha3
+		await h.commands.get("loop:manual")!(`${sha1}^..${sha3}`, h.ctx);
+
+		assert.equal(reviewedShas.length, 3, "should review all 3 commits");
+		assert.equal(reviewedShas[0], sha1, "first commit");
+		assert.equal(reviewedShas[1], sha2, "second commit");
+		assert.equal(reviewedShas[2], sha3, "third commit");
+	} finally {
+		repo.cleanup();
+	}
+});
+
+test("/loop:manual range with feedback starts workhorse", async () => {
+	const repo = createTempRepo();
+	try {
+		execSync("git checkout -b feature", { cwd: repo.cwd });
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "first feature");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "second feature");
+
+		const h = createHarness(repo.cwd);
+		let callCount = 0;
+		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+			callCount++;
+			if (callCount === 1) return { approved: false, feedback: "fix first commit" };
+			return { approved: true, feedback: "" };
+		});
+
+		await h.commands.get("loop:manual")!(`${sha1}^..${sha2}`, h.ctx);
+
+		// First commit gets feedback, workhorse prompt sent
+		assert.equal(h.userMessages.length, 1, "one workhorse prompt");
+		assert.match(h.userMessages[0], /fix first commit/, "includes feedback");
+		await h.stopLoop();
+	} finally {
+		repo.cleanup();
+	}
+});
+
+// ── Duplicate-subject remap ────────────────────────────
+
+test("/loop:manual remap with duplicate subjects picks correct commit", async () => {
+	const repo = createTempRepo();
+	try {
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "fix stuff");
+		const sha2 = addCommit(repo.cwd, "b.txt", "bbb", "fix stuff"); // same subject
+
+		const h = createHarness(repo.cwd);
+		const reviewedShas: string[] = [];
+		h.pi.events.emit("loop:set-review-fn", (sha: string) => {
+			reviewedShas.push(sha);
+			if (reviewedShas.length === 1) return { approved: false, feedback: "fix error handling" };
+			return { approved: true, feedback: "" };
+		});
+
+		await h.commands.get("loop:manual")!(sha2, h.ctx);
+
+		// Simulate workhorse amending sha2 (HEAD)
+		writeFileSync(join(repo.cwd, "b.txt"), "fixed");
+		execSync("git add b.txt && git commit --amend --no-edit", { cwd: repo.cwd });
+		const newSha = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
+
+		// Workhorse done
+		h.ctx.sessionManager.getEntries().push({
+			id: "wh-dup",
+			type: "message",
+			message: { role: "assistant", content: `Fixed.\n\n${V_FIXES_COMPLETE}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Overseer approves
+		h.ctx.sessionManager.getEntries().push({
+			id: "os-dup",
+			type: "message",
+			message: { role: "assistant", content: `All good.\n\n${V_APPROVED}`, stopReason: "end_turn" },
+		});
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait(300);
+
+		// Second reviewFn should get newSha, NOT sha1
+		assert.equal(reviewedShas.length, 2, "reviewFn called twice");
+		assert.equal(reviewedShas[1], newSha, "remaps to correct commit despite duplicate subject");
 	} finally {
 		repo.cleanup();
 	}
