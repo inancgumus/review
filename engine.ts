@@ -16,7 +16,7 @@ import { promptSets } from "./prompts.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE } from "./verdicts.js";
 import { git } from "./git.js";
 import { createManualMode } from "./manual.js";
-import { execSync } from "node:child_process";
+import { createSession, findModel, modelToStr, getLastAssistant, extractText, sanitize } from "./session.js";
 
 // ── Mode hooks (engine-private, not exported) ────────
 
@@ -45,7 +45,6 @@ interface LoopState {
 	originalModelStr: string;
 	originalThinking: string;
 	overseerLeafId: string | null;
-	anchorEntryId: string | null;
 	workhorseSummaries: string[];
 	roundResults: RoundResult[];
 	patchSnapshot: Map<string, string> | null;
@@ -75,7 +74,6 @@ function newState(overrides: Partial<LoopState> = {}): LoopState {
 		originalModelStr: "",
 		originalThinking: "xhigh",
 		overseerLeafId: null,
-		anchorEntryId: null,
 		workhorseSummaries: [],
 		roundResults: [],
 		patchSnapshot: null,
@@ -201,47 +199,7 @@ function parseArgs(args: string, cwd: string): { focus: string; contextPaths: st
 	return { focus: remaining.join(" ").trim() || "all recent code changes", contextPaths };
 }
 
-// ── Session helpers (absorbed from session.ts) ──────────
 
-/** Strip C0/C1/DEL/zero-width/line separator chars. */
-function sanitize(text: string): string {
-	return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\x80-\x9F\u200B-\u200F\u2028\u2029\uFEFF]/g, "");
-}
-
-function modelToStr(model: any): string {
-	if (!model) return "";
-	return `${model.provider}/${model.id}`;
-}
-
-function findModel(modelStr: string, ctx: any): any | null {
-	const idx = modelStr.indexOf("/");
-	if (idx === -1) return null;
-	return ctx.modelRegistry.find(modelStr.slice(0, idx), modelStr.slice(idx + 1));
-}
-
-interface LastAssistant { text: string; stopReason: string | undefined }
-
-function getLastAssistant(ctx: any): LastAssistant {
-	const entries = ctx.sessionManager.getBranch();
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const e = entries[i];
-		if (e.type === "message" && e.message.role === "assistant") {
-			return { text: extractText(e.message.content), stopReason: e.message.stopReason };
-		}
-	}
-	return { text: "", stopReason: undefined };
-}
-
-function extractText(content: any): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.filter((c: any) => c.type === "text")
-			.map((c: any) => c.text)
-			.join("\n");
-	}
-	return "";
-}
 
 // ── Reconstruct (absorbed from reconstruct.ts) ─────────
 
@@ -319,26 +277,7 @@ function findFocus(entries: any[], fromIdx: number): string | null {
 	return null;
 }
 
-// ── Editor env blocking ─────────────────────────────────
 
-const EDITOR_BLOCK = `sh -c 'echo "ERROR: Interactive editor blocked during review loop. Use: git commit -m \\"msg\\" or --no-edit for amends. For rebase, prefix with GIT_SEQUENCE_EDITOR=true or GIT_SEQUENCE_EDITOR=\\"sed ...\\"" >&2; exit 1'`;
-const EDITOR_VARS: Record<string, string> = { GIT_EDITOR: EDITOR_BLOCK, EDITOR: EDITOR_BLOCK, VISUAL: EDITOR_BLOCK, GIT_SEQUENCE_EDITOR: "true" };
-let savedEnv: Record<string, string | undefined> = {};
-
-function blockInteractiveEditors(): void {
-	for (const [k, v] of Object.entries(EDITOR_VARS)) {
-		savedEnv[k] = process.env[k];
-		process.env[k] = v;
-	}
-}
-
-function restoreEditorEnv(): void {
-	for (const k of Object.keys(EDITOR_VARS)) {
-		if (savedEnv[k] === undefined) delete process.env[k];
-		else process.env[k] = savedEnv[k];
-	}
-	savedEnv = {};
-}
 
 // ── Formatting ──────────────────────────────────────────
 
@@ -354,10 +293,6 @@ function formatDuration(ms: number): string {
 function formatTime(ts: number): string {
 	return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
-
-// ── GIT_OPTS ────────────────────────────────────────────
-
-const GIT_OPTS = { encoding: "utf-8" as const, timeout: 5000, stdio: ["pipe", "pipe", "pipe"] as const };
 
 // ── Engine ──────────────────────────────────────────────
 
@@ -378,8 +313,10 @@ export interface Engine {
 }
 
 export function createEngine(pi: ExtensionAPI): Engine {
+	const session = createSession(pi);
 	let state: LoopState = newState();
 	let loopCommandCtx: any | null = null;
+	let savedUserEditor: string | undefined;
 	let statusPrefix = "";
 	let statusTimer: ReturnType<typeof setInterval> | null = null;
 	let pauseStartedAt = 0;
@@ -424,51 +361,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		setTimeout(() => { if (phases.includes(state.phase)) fn(); }, 100);
 	}
 
-	function log(text: string): void {
-		pi.sendMessage({ customType: "loop-log", content: text, display: true }, { triggerTurn: false, deliverAs: "followUp" });
-	}
 
-	function findAnchor(ctx: any): { id: string; data: any } | null {
-		const entries = ctx.sessionManager.getEntries();
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const e = entries[i];
-			if (e.type === "custom" && e.customType === "loop-anchor") return { id: e.id, data: e.data };
-		}
-		return null;
-	}
-
-	function rememberAnchor(ctx: any): void {
-		const extras = modeHooks.getAnchorExtras?.() ?? {};
-		pi.appendEntry("loop-anchor", {
-			focus: state.focus,
-			initialRequest: state.initialRequest,
-			contextPaths: state.contextPaths,
-			mode: state.mode,
-			cwd: ctx.cwd,
-			...extras,
-		});
-		state.anchorEntryId = ctx.sessionManager.getLeafId();
-	}
-
-	async function navigateToEntry(targetId: string, ctx: any): Promise<boolean> {
-		if (typeof ctx.navigateTree !== "function") {
-			ctx.ui.notify("Loop transition requires command context", "error");
-			await stopLoop(ctx);
-			return false;
-		}
-		const result = await ctx.navigateTree(targetId, { summarize: false });
-		return !result?.cancelled;
-	}
-
-	async function navigateToAnchor(ctx: any): Promise<boolean> {
-		if (!state.anchorEntryId) state.anchorEntryId = findAnchor(ctx)?.id ?? null;
-		if (!state.anchorEntryId) {
-			ctx.ui.notify("No loop anchor found", "error");
-			await stopLoop(ctx);
-			return false;
-		}
-		return navigateToEntry(state.anchorEntryId, ctx);
-	}
 
 	async function continueLoop(eventCtx: any, action: { type: "oversee"; summaryText?: string } | { type: "workhorse"; overseerText: string }): Promise<void> {
 		const ctx = loopCommandCtx;
@@ -482,13 +375,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		else await startOverseer(ctx, action.summaryText);
 	}
 
-	async function setAgent(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
-		const model = findModel(modelStr, ctx);
-		if (!model) { ctx.ui.notify(`Model not found: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
-		if (!await pi.setModel(model)) { ctx.ui.notify(`No API key for model: ${modelStr}`, "error"); await stopLoop(ctx); return false; }
-		pi.setThinkingLevel(thinking as any);
-		return true;
-	}
+
 
 	// ── Time tracking ───────────────────────────
 
@@ -521,7 +408,6 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				maxRounds: cfg.maxRounds,
 				commitList: cfg.commits,
 				currentCommitIdx: cfg.startIdx,
-				anchorEntryId: cfg.anchor ?? null,
 				originalModelStr: modelToStr(ctx.model),
 				originalThinking: pi.getThinkingLevel(),
 				loopStartedAt: Date.now(),
@@ -546,8 +432,13 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				suppressRoundIncrement: true,
 				suppressLogs: true,
 			};
-			rememberAnchor(ctx);
-			blockInteractiveEditors();
+			session.rememberAnchor(ctx, {
+				focus: state.focus, initialRequest: state.initialRequest,
+				contextPaths: state.contextPaths, mode: state.mode, cwd: ctx.cwd,
+				...modeHooks.getAnchorExtras?.() ?? {},
+			});
+			savedUserEditor = process.env.EDITOR || process.env.VISUAL;
+			session.blockEditors();
 			if (cfg.pauseTimer) pauseTimer();
 			startStatusTimer(ctx);
 			return true;
@@ -561,7 +452,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			resumeTimer();
 			const text = commitSha ? `[COMMIT:${commitSha}]\n${feedback}` : feedback;
 			return (async () => {
-				if (!await navigateToAnchor(ctx)) return;
+				if (!await session.navigateToAnchor(ctx)) { ctx.ui.notify("No loop anchor found", "error"); await stopLoop(ctx); return; }
 				await startWorkhorse(text, ctx);
 			})();
 		},
@@ -573,7 +464,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 				statusPrefix = `Manual: ${sha.slice(0, 7)} (${state.currentCommitIdx + 1}/${state.commitList.length})`;
 				updateStatus(ctx);
 			}
-			return { sha, savedEditor: savedEnv.EDITOR || savedEnv.VISUAL };
+			return { sha, savedEditor: savedUserEditor };
 		},
 		advanceCommit(ctx) {
 			if (state.currentCommitIdx >= state.commitList.length - 1) {
@@ -597,26 +488,26 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	async function startOverseer(ctx: any, summaryText?: string): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
 		if (state.reviewMode === "fresh") {
-			if (!await navigateToAnchor(ctx)) return;
+			if (!await session.navigateToAnchor(ctx)) { ctx.ui.notify("No loop anchor found", "error"); await stopLoop(ctx); return; }
 		} else if (state.round > 1) {
 			if (!state.overseerLeafId) {
 				ctx.ui.notify("No loop branch to return to", "error");
 				await stopLoop(ctx);
 				return;
 			}
-			if (!await navigateToEntry(state.overseerLeafId, ctx)) return;
+			if (!await session.navigateToEntry(state.overseerLeafId, ctx)) return;
 			if (summaryText) {
 				pi.sendMessage({ customType: "workhorse-summary", content: summaryText, display: true }, { triggerTurn: false });
 			}
 		}
-		if (!await setAgent(cfg.overseerModel, cfg.overseerThinking, ctx)) return;
+		if (!await session.setModel(cfg.overseerModel, cfg.overseerThinking, ctx)) { ctx.ui.notify(`Model not available: ${cfg.overseerModel}`, "error"); await stopLoop(ctx); return; }
 
 		state.phase = "reviewing";
 		state.roundStartedAt = Date.now();
 		state.overseerLeafId = null;
 		statusPrefix = `🔍 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.overseerModel} reviewing`;
 		updateStatus(ctx);
-		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
+		if (!modeHooks.suppressLogs) session.log(`[Round ${state.round}] Overseer: ${cfg.overseerModel} · mode: ${state.reviewMode} · started: ${formatTime(state.roundStartedAt)}`);
 		const prompts = promptSets[state.mode];
 		const promptExtras = modeHooks.getPromptExtras?.() ?? {};
 		pi.sendUserMessage(prompts.buildOverseerPrompt({
@@ -631,7 +522,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 	async function startWorkhorse(overseerText: string, ctx: any): Promise<void> {
 		const cfg = loadConfig(ctx.cwd);
 		state.overseerLeafId = ctx.sessionManager.getLeafId();
-		if (!await navigateToAnchor(ctx)) return;
+		if (!await session.navigateToAnchor(ctx)) { ctx.ui.notify("No loop anchor found", "error"); await stopLoop(ctx); return; }
 
 		// Snapshot patch-ids before workhorse runs (incremental review only)
 		state.patchSnapshot = null;
@@ -651,19 +542,19 @@ export function createEngine(pi: ExtensionAPI): Engine {
 					state.patchSnapshot = git.snapshotPatchIds(ctx.cwd, base);
 					state.snapshotBase = base;
 					state.taggedSubjects = git.resolveSubjects(ctx.cwd, taggedSHAs);
-					log(`[Snapshot] ${state.taggedSubjects.length} tagged commits, ${state.patchSnapshot.size} in range`);
+					session.log(`[Snapshot] ${state.taggedSubjects.length} tagged commits, ${state.patchSnapshot.size} in range`);
 				}
 			}
 		}
 
-		if (!await setAgent(cfg.workhorseModel, cfg.workhorseThinking, ctx)) return;
+		if (!await session.setModel(cfg.workhorseModel, cfg.workhorseThinking, ctx)) { ctx.ui.notify(`Model not available: ${cfg.workhorseModel}`, "error"); await stopLoop(ctx); return; }
 
 		state.phase = "fixing";
 		const rr = state.roundResults.find(r => r.round === state.round);
 		if (rr) rr.workhorseStartedAt = Date.now();
 		statusPrefix = `🔧 Round ${state.round}/${state.maxRounds} · ${state.reviewMode} · ${cfg.workhorseModel} fixing`;
 		updateStatus(ctx);
-		if (!modeHooks.suppressLogs) log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
+		if (!modeHooks.suppressLogs) session.log(`[Round ${state.round}] Workhorse: ${cfg.workhorseModel}`);
 		const prompts = promptSets[state.mode];
 		const cfg2 = loadConfig(ctx.cwd);
 		pi.sendUserMessage(prompts.buildWorkhorsePrompt(overseerText, state.contextPaths, state.round, { rewriteHistory: cfg2.rewriteHistory }));
@@ -674,12 +565,12 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const summaryText = `[Workhorse Round ${state.round}] ${summary}`;
 		state.workhorseSummaries.push(summaryText);
 		recordWorkhorse(state.round, summaryText);
-		if (!modeHooks.suppressLogs) log(`🔧 Workhorse done\n${summary}`);
+		if (!modeHooks.suppressLogs) session.log(`🔧 Workhorse done\n${summary}`);
 
 		if (state.contextHashes && state.contextPaths.length > 0) {
 			state.changedContextPaths = findChangedContextPaths(state.contextPaths, state.contextHashes);
 			if (state.changedContextPaths.length > 0) {
-				log(`📄 Changed @paths: ${state.changedContextPaths.length}/${state.contextPaths.length}`);
+				session.log(`📄 Changed @paths: ${state.changedContextPaths.length}/${state.contextPaths.length}`);
 			}
 			state.contextHashes = null;
 		}
@@ -689,7 +580,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			const after = git.snapshotPatchIds(cwd, state.snapshotBase);
 			state.unchangedCommits = git.detectUnchanged(state.patchSnapshot, after, state.taggedSubjects);
 			if (state.unchangedCommits.length > 0) {
-				log(`⚠️ Unchanged commits: ${state.unchangedCommits.join(", ")}`);
+				session.log(`⚠️ Unchanged commits: ${state.unchangedCommits.join(", ")}`);
 			}
 			state.patchSnapshot = null;
 			state.snapshotBase = "";
@@ -699,7 +590,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		const now = Date.now();
 		const rr = state.roundResults.find(r => r.round === state.round);
 		if (rr) rr.endedAt = now;
-		if (!modeHooks.suppressLogs && state.roundStartedAt) log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
+		if (!modeHooks.suppressLogs && state.roundStartedAt) session.log(`⏱ Round ${state.round}: ${formatDuration(now - state.roundStartedAt)} (${formatTime(state.roundStartedAt)} → ${formatTime(now)})`);
 
 		if (!modeHooks.suppressRoundIncrement) state.round++;
 		await continueLoop(eventCtx, { type: "oversee", summaryText: state.reviewMode === "incremental" ? summaryText : undefined });
@@ -719,7 +610,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 		loopCommandCtx = null;
 		pauseStartedAt = 0;
 		ctx.ui.setStatus("loop", "");
-		restoreEditorEnv();
+		session.restoreEditors();
 		if (!wasRunning || !state.originalModelStr) return;
 
 		const model = findModel(state.originalModelStr, ctx);
@@ -754,7 +645,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			const summary = sanitize(stripVerdict(text));
 			if (modeHooks.onChangesRequested) modeHooks.onChangesRequested(text, ctx);
 			deferIf("reviewing", () => {
-				if (!modeHooks.suppressLogs) log(`❌ CHANGES REQUESTED\n${summary}`);
+				if (!modeHooks.suppressLogs) session.log(`❌ CHANGES REQUESTED\n${summary}`);
 				if (state.round >= state.maxRounds) { ctx.ui.notify(`Hit ${state.maxRounds} rounds without approval`, "warning"); void stopLoop(ctx); return; }
 				void continueLoop(ctx, { type: "workhorse", overseerText: text });
 			});
@@ -798,9 +689,10 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			loopStartedAt: Date.now(),
 		});
-		log(`📝 Request · Started: ${formatTime(state.loopStartedAt)}\n${state.initialRequest}`);
-		rememberAnchor(ctx);
-		blockInteractiveEditors();
+		session.log(`📝 Request · Started: ${formatTime(state.loopStartedAt)}\n${state.initialRequest}`);
+		session.rememberAnchor(ctx, { focus: state.focus, initialRequest: state.initialRequest, contextPaths: state.contextPaths, mode: state.mode, cwd: ctx.cwd });
+		savedUserEditor = process.env.EDITOR || process.env.VISUAL;
+		session.blockEditors();
 		startStatusTimer(ctx);
 		ctx.ui.notify(`Saving model: ${state.originalModelStr} · ${state.originalThinking}`, "info");
 		await ctx.waitForIdle();
@@ -809,7 +701,7 @@ export function createEngine(pi: ExtensionAPI): Engine {
 
 	async function resumeLoop(ctx: any): Promise<void> {
 		if (state.phase !== "idle") { ctx.ui.notify("Loop already running", "warning"); return; }
-		const anchor = findAnchor(ctx);
+		const anchor = session.findAnchor(ctx);
 
 		// Delegate to mode-specific resumer if one is registered
 		const resumer = anchor?.data?.mode ? modeResumers[anchor.data.mode] : undefined;
@@ -833,10 +725,10 @@ export function createEngine(pi: ExtensionAPI): Engine {
 			maxRounds: cfg.maxRounds, reviewMode: cfg.reviewMode,
 			originalModelStr: modelToStr(ctx.model), originalThinking: pi.getThinkingLevel(),
 			overseerLeafId: recovered.overseerLeafId,
-			anchorEntryId: anchor?.id ?? null,
 			loopStartedAt: Date.now(),
 		});
-		blockInteractiveEditors();
+		savedUserEditor = process.env.EDITOR || process.env.VISUAL;
+		session.blockEditors();
 		startStatusTimer(ctx);
 		ctx.ui.notify(`Resuming round ${recovered.round} (${recovered.phase} phase)`, "info");
 		await ctx.waitForIdle();
