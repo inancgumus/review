@@ -323,27 +323,29 @@ test("incremental review round 2 includes unchanged commits warning", async () =
 	}
 });
 
-test("incremental review round 2 without unchanged commits has no warning (single SHA)", async () => {
+test("incremental review single SHA with actual fix has no unchanged warning", async () => {
 	const repo = createTempRepo();
 	const saved = getLoopSetting("reviewMode", "fresh");
 	setLoopSetting("reviewMode", "incremental");
 	try {
-		addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
+		const sha1 = addCommit(repo.cwd, "a.txt", "aaa", "Add auth module");
 
 		const h = createHarness(repo.cwd);
 		await h.commands.get("loop")!("check auth", h.ctx);
 
-		// Overseer references only 1 SHA — extension skips detection for < 2
-		const sha1 = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
 		h.pushAssistant(`Check \`${sha1.slice(0, 7)}\`\n\n${V_CHANGES}`);
 		await h.fireAgentEnd();
+
+		// Actually fix the commit so patch-id changes
+		writeFileSync(join(repo.cwd, "a.txt"), "aaa fixed");
+		execSync(`git add a.txt && git commit --amend --no-edit`, { cwd: repo.cwd });
 
 		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
 		await h.fireAgentEnd();
 
 		const round2 = h.userMessages[2];
 		assert.ok(round2, "round 2 prompt exists");
-		assert.doesNotMatch(round2, /unchanged/i, "no unchanged warning with single SHA");
+		assert.doesNotMatch(round2, /unchanged/i, "no unchanged warning when commit was actually fixed");
 		await h.stopLoop();
 	} finally {
 		setLoopSetting("reviewMode", saved);
@@ -773,7 +775,7 @@ test("short hex under 7 chars ignored by SHA extraction — no snapshot", async 
 	}
 });
 
-test("single tagged SHA skips unchanged detection — no snapshot", async () => {
+test("single tagged SHA triggers unchanged detection when not fixed", async () => {
 	const repo = createTempRepo();
 	const saved = getLoopSetting("reviewMode", "fresh");
 	setLoopSetting("reviewMode", "incremental");
@@ -783,15 +785,18 @@ test("single tagged SHA skips unchanged detection — no snapshot", async () => 
 		const h = createHarness(repo.cwd);
 		await h.commands.get("loop")!("check auth", h.ctx);
 
-		// Only 1 SHA — extension requires > 1 to activate snapshot
 		h.pushAssistant(`Check \`${sha1.slice(0, 7)}\`\n\n${V_CHANGES}`);
 		await h.fireAgentEnd();
 
+		// Workhorse claims to fix but doesn't actually modify the commit
 		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
 		await h.fireAgentEnd();
 
 		const hasSnapshot = h.logMessages.some(m => m.includes("[Snapshot]"));
-		assert.ok(!hasSnapshot, "should not snapshot with single SHA");
+		assert.ok(hasSnapshot, "snapshot was taken for single SHA");
+
+		const hasWarning = h.logMessages.some(m => m.includes("⚠️ Unchanged commits"));
+		assert.ok(hasWarning, "warns about unchanged single commit");
 		await h.stopLoop();
 	} finally {
 		setLoopSetting("reviewMode", saved);
