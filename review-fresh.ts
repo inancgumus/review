@@ -11,7 +11,7 @@ import type { RoundResult } from "./types.js";
 import { StopError, findModel, modelToStr } from "./session.js";
 import { loadConfig } from "./config.js";
 import { parseArgs, expandContextPaths } from "./context.js";
-import { promptSets } from "./prompts.js";
+import { buildReviewWorkhorsePrompt } from "./review-workhorse.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, matchVerdict, hasFixesComplete, stripVerdict, sanitize } from "./verdicts.js";
 import { formatDuration, formatTime } from "./status.js";
 
