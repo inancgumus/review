@@ -81,7 +81,7 @@ export function createSession(pi: ExtensionAPI): Session {
 	let pendingResolve: ((value: { text: string }) => void) | null = null;
 	let pendingReject: ((error: Error) => void) | null = null;
 
-	pi.on("agent_end", (_event: any, ctx: any) => {
+	function notifyAgentEnd(_event: any, ctx: any): void {
 		if (!pendingResolve) return;
 		const { text, stopReason } = getLastAssistant(ctx);
 		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") {
@@ -95,7 +95,7 @@ export function createSession(pi: ExtensionAPI): Session {
 		pendingResolve = null;
 		pendingReject = null;
 		resolve({ text });
-	});
+	}
 
 	async function setModel(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
 		const model = findModel(modelStr, ctx);
@@ -190,7 +190,7 @@ export function createSession(pi: ExtensionAPI): Session {
 	}
 
 	return {
-		setModel, send, stop,
+		setModel, send, notifyAgentEnd, stop,
 		findAnchor: sessionFindAnchor, rememberAnchor,
 		navigateToEntry, navigateToAnchor,
 		getLeafId, getBranch,

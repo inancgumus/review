@@ -10,10 +10,12 @@ import { loadConfig } from "./config.js";
 import { promptSets } from "./prompts.js";
 import { V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, matchVerdict, hasFixesComplete, stripVerdict, sanitize } from "./verdicts.js";
 import { parseArgs, snapshotContextHashes, findChangedContextPaths } from "./context.js";
-import { formatDuration, formatTime, createStatus } from "./status.js";
+import type { Session } from "./session.js";
+import type { Status } from "./status.js";
+import { formatDuration, formatTime } from "./status.js";
 import { git } from "./git.js";
 import { createManualMode } from "./manual.js";
-import { createSession, findModel, modelToStr, getLastAssistant, extractText } from "./session.js";
+import { findModel, modelToStr, getLastAssistant, extractText } from "./session.js";
 
 // ── Mode hooks (engine-private, not exported) ────────
 
@@ -187,9 +189,7 @@ export interface Engine {
 	startManual(args: string, ctx: any): Promise<void>;
 }
 
-export function createEngine(pi: ExtensionAPI): Engine {
-	const session = createSession(pi);
-	const status = createStatus();
+export function createEngine(pi: ExtensionAPI, session: Session, status: Status): Engine {
 	let state: LoopState = newState();
 	let loopCommandCtx: any | null = null;
 	let savedUserEditor: string | undefined;
