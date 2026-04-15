@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import loopExtension from "../index.ts";
-import { V_CHANGES } from "../verdicts.ts";
+import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
+
+const SETTINGS_DIR = mkdtempSync(join(tmpdir(), "loop-exec-settings-"));
+const SETTINGS_PATH = join(SETTINGS_DIR, "settings.json");
+process.env.LOOP_SETTINGS_PATH = SETTINGS_PATH;
+
+function readSettings(): any {
+	try { return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8")); }
+	catch { return {}; }
+}
+
+function writeSettings(settings: any): void {
+	mkdirSync(dirname(SETTINGS_PATH), { recursive: true });
+	writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+}
+
+function getLoopSetting<T>(key: string, fallback: T): T {
+	const settings = readSettings();
+	return settings?.loop?.[key] ?? fallback;
+}
+
+function setLoopSetting(key: string, value: unknown): void {
+	const settings = readSettings();
+	if (!settings.loop) settings.loop = {};
+	settings.loop[key] = value;
+	writeSettings(settings);
+}
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -244,4 +273,40 @@ test("/loop still uses review prompts", async () => {
 	assert.equal(h.userMessages.length, 1);
 	assert.match(h.userMessages[0], /code overseer/i, "uses review prompt");
 	assert.doesNotMatch(h.userMessages[0], /orchestrator/i, "does not use orchestrator prompt");
+});
+
+test("/loop:exec incremental round 2 uses short re-check prompt", async () => {
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
+	try {
+		const h = createHarness();
+		await h.commands.get("loop:exec")!("implement auth", h.ctx);
+
+		// Round 1: orchestrator says CHANGES_REQUESTED
+		const entries = h.ctx.sessionManager.getEntries();
+		let seq = entries.length;
+		function pushAssistant(text: string) {
+			seq++;
+			const id = `assistant-${seq}`;
+			entries.push({ id, type: "message", message: { role: "assistant", content: text, stopReason: "end_turn" } });
+			h.ctx.sessionManager.getLeafId = () => id;
+		}
+
+		pushAssistant(`<task>\nCreate routes\n</task>\n\n${V_CHANGES}`);
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Round 1: workhorse completes
+		pushAssistant(`Created routes.\n\n${V_FIXES_COMPLETE}`);
+		h.events.get("agent_end")!({}, h.ctx);
+		await wait();
+
+		// Round 2 prompt should be the short re-check, not full orchestrator
+		const round2 = h.userMessages[2];
+		assert.ok(round2, "round 2 prompt exists");
+		assert.match(round2, /re-check/i, "uses short re-check prompt");
+		assert.doesNotMatch(round2, /implementation orchestrator/i, "not the full orchestrator prompt");
+	} finally {
+		setLoopSetting("reviewMode", saved);
+	}
 });

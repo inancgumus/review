@@ -19,6 +19,7 @@ import { createSession } from "./session.js";
 import { createStatus } from "./status.js";
 import { createFreshReview } from "./review-fresh.js";
 import { createIncrementalReview } from "./review-incremental.js";
+import { createExecMode } from "./exec.js";
 import { showLog } from "./log-view.js";
 import { buildDemoData } from "./demo.js";
 
@@ -31,11 +32,12 @@ export default function (pi: ExtensionAPI) {
 	const engine = createEngine(pi, session, status);
 	const fresh = createFreshReview(pi, session, status);
 	const incremental = createIncrementalReview(pi, session, status);
+	const exec = createExecMode(pi, session, status);
 
 	// Block file-modifying tools (edit, write) when the overseer is reviewing.
 	const BLOCKED_TOOLS_DURING_REVIEW = ["edit", "write"];
 	pi.on("tool_call", async (event) => {
-		const reviewing = engine.state.phase === "reviewing" || fresh.state.phase === "reviewing" || incremental.state.phase === "reviewing";
+		const reviewing = engine.state.phase === "reviewing" || fresh.state.phase === "reviewing" || incremental.state.phase === "reviewing" || exec.state.phase === "reviewing";
 		if (!reviewing) return;
 		if (BLOCKED_TOOLS_DURING_REVIEW.includes(event.toolName)) {
 			return { block: true, reason: "You are the OVERSEER — do not edit or write files. Only use read and bash (for git/grep/find/ls). Report issues with file, line, what's wrong, and how to fix." };
@@ -58,7 +60,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("loop:exec", {
 		description: "Start exec loop (orchestrator → workhorse). Usage: /loop:exec [focus] [@path ...]",
-		handler: (args, ctx) => engine.start("exec", args, ctx),
+		handler: (args, ctx) => exec.start(args, ctx),
 	});
 
 	pi.registerCommand("loop:manual", {
@@ -80,6 +82,9 @@ export default function (pi: ExtensionAPI) {
 			} else if (incremental.state.phase !== "idle") {
 				ctx.ui.notify("Loop stopped", "info");
 				await incremental.stop(ctx);
+			} else if (exec.state.phase !== "idle") {
+				ctx.ui.notify("Loop stopped", "info");
+				await exec.stop(ctx);
 			} else if (engine.state.phase !== "idle") {
 				ctx.ui.notify("Loop stopped", "info");
 				await engine.stop(ctx);
@@ -94,12 +99,13 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const num = parseInt(args, 10);
 			if (isNaN(num) || num < 1) {
-				const active = fresh.state.phase !== "idle" ? fresh.state : incremental.state.phase !== "idle" ? incremental.state : engine.state;
+				const active = fresh.state.phase !== "idle" ? fresh.state : incremental.state.phase !== "idle" ? incremental.state : exec.state.phase !== "idle" ? exec.state : engine.state;
 				ctx.ui.notify(`Current max rounds: ${active.phase !== "idle" ? active.maxRounds : loadConfig(ctx.cwd).maxRounds}. Usage: /loop:rounds <n>`, "info");
 				return;
 			}
 			if (fresh.state.phase !== "idle") fresh.state.maxRounds = num;
 			else if (incremental.state.phase !== "idle") incremental.state.maxRounds = num;
+			else if (exec.state.phase !== "idle") exec.state.maxRounds = num;
 			else engine.state.maxRounds = num;
 			saveConfigField("maxRounds", num);
 			if (engine.state.phase !== "idle") ctx.ui.setStatus("loop", `${engine.state.phase === "reviewing" ? "🔍" : "🔧"} Round ${engine.state.round}/${num}`);
@@ -112,8 +118,9 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const fState = fresh.state;
 			const iState = incremental.state;
+			const xState = exec.state;
 			const eState = engine.state;
-			const results = fState.initialRequest ? fState : iState.initialRequest ? iState : eState;
+			const results = fState.initialRequest ? fState : iState.initialRequest ? iState : xState.initialRequest ? xState : eState;
 			if (results.roundResults.length === 0 && !results.initialRequest) { ctx.ui.notify("No loop rounds recorded yet.", "info"); return; }
 			await showLog(results.initialRequest, results.roundResults, ctx, results.loopStartedAt);
 		},
