@@ -14,7 +14,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
-import { createEngine } from "./engine.js";
 import { createSession } from "./session.js";
 import { createStatus } from "./status.js";
 import { createFreshReview } from "./review-fresh.js";
@@ -30,7 +29,6 @@ export { loadConfig, saveConfigField } from "./config.js";
 export default function (pi: ExtensionAPI) {
 	const session = createSession(pi);
 	const status = createStatus();
-	const engine = createEngine(pi, session, status);
 	const fresh = createFreshReview(pi, session, status);
 	const incremental = createIncrementalReview(pi, session, status);
 	const exec = createExecMode(pi, session, status);
@@ -39,7 +37,7 @@ export default function (pi: ExtensionAPI) {
 	// Block file-modifying tools (edit, write) when the overseer is reviewing.
 	const BLOCKED_TOOLS_DURING_REVIEW = ["edit", "write"];
 	pi.on("tool_call", async (event) => {
-		const reviewing = engine.state.phase === "reviewing" || fresh.state.phase === "reviewing" || incremental.state.phase === "reviewing" || exec.state.phase === "reviewing" || manual.state.phase === "reviewing";
+		const reviewing = fresh.state.phase === "reviewing" || incremental.state.phase === "reviewing" || exec.state.phase === "reviewing" || manual.state.phase === "reviewing";
 		if (!reviewing) return;
 		if (BLOCKED_TOOLS_DURING_REVIEW.includes(event.toolName)) {
 			return { block: true, reason: "You are the OVERSEER — do not edit or write files. Only use read and bash (for git/grep/find/ls). Report issues with file, line, what's wrong, and how to fix." };
@@ -48,7 +46,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", (_event, ctx) => {
 		session.notifyAgentEnd(_event, ctx);
-		engine.onAgentEnd(_event, ctx);
 	});
 
 	pi.registerCommand("loop", {
@@ -78,7 +75,8 @@ export default function (pi: ExtensionAPI) {
 				await manual.resume(ctx, anchor);
 				return;
 			}
-			await engine.resume(ctx);
+			ctx.ui.notify("Nothing to resume. Use /loop to start.", "info");
+			return;
 		},
 	});
 
@@ -97,9 +95,6 @@ export default function (pi: ExtensionAPI) {
 			} else if (manual.state.phase !== "idle") {
 				ctx.ui.notify("Loop stopped", "info");
 				await manual.stop(ctx);
-			} else if (engine.state.phase !== "idle") {
-				ctx.ui.notify("Loop stopped", "info");
-				await engine.stop(ctx);
 			} else {
 				ctx.ui.notify("No loop running", "info");
 			}
@@ -111,7 +106,7 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const num = parseInt(args, 10);
 			if (isNaN(num) || num < 1) {
-				const active = fresh.state.phase !== "idle" ? fresh.state : incremental.state.phase !== "idle" ? incremental.state : exec.state.phase !== "idle" ? exec.state : manual.state.phase !== "idle" ? manual.state : engine.state;
+				const active = fresh.state.phase !== "idle" ? fresh.state : incremental.state.phase !== "idle" ? incremental.state : exec.state.phase !== "idle" ? exec.state : manual.state;
 				ctx.ui.notify(`Current max rounds: ${active.phase !== "idle" ? active.maxRounds : loadConfig(ctx.cwd).maxRounds}. Usage: /loop:rounds <n>`, "info");
 				return;
 			}
@@ -119,9 +114,7 @@ export default function (pi: ExtensionAPI) {
 			else if (incremental.state.phase !== "idle") incremental.state.maxRounds = num;
 			else if (exec.state.phase !== "idle") exec.state.maxRounds = num;
 			else if (manual.state.phase !== "idle") manual.state.maxRounds = num;
-			else engine.state.maxRounds = num;
 			saveConfigField("maxRounds", num);
-			if (engine.state.phase !== "idle") ctx.ui.setStatus("loop", `${engine.state.phase === "reviewing" ? "🔍" : "🔧"} Round ${engine.state.round}/${num}`);
 			ctx.ui.notify(`Max rounds → ${num}`, "info");
 		},
 	});
@@ -133,8 +126,7 @@ export default function (pi: ExtensionAPI) {
 			const iState = incremental.state;
 			const xState = exec.state;
 			const mState = manual.state;
-			const eState = engine.state;
-			const results = fState.initialRequest ? fState : iState.initialRequest ? iState : xState.initialRequest ? xState : mState.initialRequest ? mState : eState;
+			const results = fState.initialRequest ? fState : iState.initialRequest ? iState : xState.initialRequest ? xState : mState;
 			if (results.roundResults.length === 0 && !results.initialRequest) { ctx.ui.notify("No loop rounds recorded yet.", "info"); return; }
 			await showLog(results.initialRequest, results.roundResults, ctx, results.loopStartedAt);
 		},
