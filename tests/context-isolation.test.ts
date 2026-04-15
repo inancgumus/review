@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 // Isolate settings so parallel suites don't race on the global file.
 process.env.LOOP_SETTINGS_PATH = join(mkdtempSync(join(tmpdir(), "loop-settings-")), "settings.json");
 
-import loopExtension from "../index.ts";
+import loopExtension, { loadConfig, saveConfigField } from "../index.ts";
 import { V_CHANGES, V_FIXES_COMPLETE } from "../verdicts.ts";
 
 function wait(ms = 150): Promise<void> {
@@ -184,7 +184,6 @@ const workhorseText = [
 
 test("fresh mode resets workhorse and next overseer to the same base context", async () => {
 	// Ensure fresh mode regardless of user's settings.json
-	const { loadConfig, saveConfigField } = await import("../config.ts");
 	const savedMode = loadConfig(process.cwd()).reviewMode;
 	saveConfigField("reviewMode", "fresh");
 

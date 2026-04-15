@@ -18,6 +18,9 @@ import { createEngine } from "./engine.js";
 import { showLog } from "./log-view.js";
 import { buildDemoData } from "./demo.js";
 
+export { showLog, loadPiAgent } from "./log-view.js";
+export { loadConfig, saveConfigField } from "./config.js";
+
 export default function (pi: ExtensionAPI) {
 	const engine = createEngine(pi);
 

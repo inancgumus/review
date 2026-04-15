@@ -1,0 +1,1912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Architecture Viewer</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: var(--text-base);
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+:root {
+  --bg: #1a1a1e;
+  --surface: #242428;
+  --surface-hover: #2a2a2f;
+  --border: #333338;
+  --text: #e8e4df;
+  --text-muted: #8a8780;
+  --accent: #6b8acd;
+  --method-get: #5a9a6b;
+  --method-post: #6b8acd;
+  --method-put: #c9a84e;
+  --method-delete: #c75f5f;
+  --new: #5a9a6b;
+  --changed: #6b8acd;
+  --removed: #c75f5f;
+  --edge-a: #8a8780;
+  --edge-b: #6b8aad;
+  --font-mono: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 13px;
+  --text-xs: 0.8rem;
+  --text-sm: 0.9rem;
+  --text-base: 1rem;
+  --text-lg: 1.1rem;
+  --text-xl: 1.3rem;
+}
+code, pre, .mono { font-family: var(--font-mono); font-size: var(--text-sm); }
+pre { white-space: pre-wrap; word-break: break-word; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(232,228,223,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(232,228,223,0.18); }
+
+/* Layout */
+.app { display: flex; flex-direction: column; height: 100%; }
+.tab-bar {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  background: var(--surface); padding: 0 16px; flex-shrink: 0;
+}
+.tab-btn {
+  padding: 10px 20px; border: none; background: none; color: var(--text-muted);
+  font-family: inherit; font-size: var(--text-lg); font-weight: 500;
+  cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.scene-bar {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  background: var(--bg); padding: 0 16px; flex-shrink: 0;
+}
+.scene-btn {
+  padding: 8px 16px; border: none; background: none; color: var(--text-muted);
+  font-family: inherit; font-size: var(--text-base); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.scene-btn:hover { color: var(--text); }
+.scene-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.workspace { display: flex; flex: 1; overflow: hidden; }
+.diagram-area { flex: 7; position: relative; overflow: hidden; }
+.diagram-container { position: absolute; inset: 0; }
+.detail-panel {
+  flex: 3; min-width: 320px; max-width: 420px; border-left: 1px solid var(--border);
+  background: var(--surface); overflow-y: auto; padding: 0;
+}
+.detail-panel.closed { display: none; }
+
+/* Diagram nodes */
+.dnode {
+  position: absolute; padding: 0.7rem 1rem; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  transition: opacity 0.1s, border-color 0.1s; z-index: 2;
+  min-width: 15rem; width: max-content;
+}
+.dnode:hover { background: var(--surface-hover); }
+.dnode.selected { border: 2px solid var(--accent); }
+.dnode.dimmed { opacity: 0.2; }
+.dnode-title { font-size: var(--text-base); font-weight: 600; text-align: left; white-space: nowrap; }
+.dnode-sub { font-size: var(--text-sm); color: var(--text-muted); text-align: left; white-space: nowrap; }
+
+/* Change status badges on nodes */
+.dnode.status-new { border-color: var(--new); }
+.dnode.status-changed { border-color: var(--changed); }
+.dnode.status-removed { border-color: var(--removed); text-decoration: line-through; opacity: 0.7; }
+.dnode.status-removed .dnode-title { text-decoration: line-through; }
+.dnode .incomplete-dot {
+  position: absolute; top: 6px; right: 6px; width: 7px; height: 7px;
+  background: var(--removed); border-radius: 50%;
+}
+.change-badge {
+  position: absolute; top: -8px; right: -8px; font-size: 9px; font-weight: 700;
+  padding: 1px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.change-badge.new { background: var(--new); color: #fff; }
+.change-badge.changed { background: var(--changed); color: #fff; }
+.change-badge.removed { background: var(--removed); color: #fff; }
+
+/* SVG edges */
+.edge-layer { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none; }
+.edge-layer path { pointer-events: stroke; cursor: pointer; }
+.edge-layer path.dimmed { opacity: 0.2; stroke-dasharray: none !important; animation: none !important; }
+
+/* Data flow: marching ants */
+@keyframes edge-flow {
+  to { stroke-dashoffset: -24; }
+}
+.edge-layer path:not(.dimmed) {
+  stroke-dasharray: 4 20;
+  animation: edge-flow 1.4s linear infinite;
+}
+
+/* Data flow: traveling dots */
+.flow-dot { pointer-events: auto; cursor: pointer; }
+.flow-dot.dimmed-dot { display: none; }
+.edge-label {
+  position: absolute; font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-muted); pointer-events: auto; cursor: pointer;
+  z-index: 3;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  background: var(--bg);
+  border-radius: 2px;
+}
+.edge-label.dimmed { opacity: 0.15; }
+.edge-label:hover { color: var(--accent); z-index: 5; }
+
+/* Endpoint cards below nodes */
+.endpoint-card {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.3;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 7px;
+  z-index: 3;
+  pointer-events: auto;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.endpoint-card.dimmed { opacity: 0.15; }
+.endpoint-card:hover { border-color: var(--accent); z-index: 5; }
+.endpoint-card .ep-head { display: flex; align-items: center; gap: 4px; }
+.endpoint-card .ep-method {
+  font-size: 7px; font-weight: 700; padding: 0 3px; border-radius: 2px; color: #fff; flex-shrink: 0;
+}
+.endpoint-card .ep-method.GET { background: var(--method-get); }
+.endpoint-card .ep-method.POST { background: var(--method-post); }
+.endpoint-card .ep-method.PUT { background: var(--method-put); }
+.endpoint-card .ep-method.DELETE { background: var(--method-delete); }
+.endpoint-card .ep-path { color: var(--text); }
+.endpoint-card .ep-io { color: var(--text-muted); margin-top: 1px; }
+.endpoint-card .ep-in::before { content: "→ "; color: var(--new); }
+.endpoint-card .ep-out::before { content: "← "; color: var(--accent); }
+
+/* Modal popover — always centered */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-box {
+  z-index: 51; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 16px 20px; font-family: inherit; font-size: var(--text-sm); color: var(--text);
+  max-width: 480px; width: 90%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-box .modal-title { font-family: var(--font-mono); font-weight: 600; margin-bottom: 8px; }
+
+/* Detail panel styling */
+.dp-header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.dp-title { font-size: var(--text-xl); font-weight: 600; margin-bottom: 4px; }
+.dp-desc { font-size: var(--text-sm); color: var(--text-muted); }
+.dp-section { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.dp-section-title {
+  font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);
+  margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.dp-file { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--accent); margin-bottom: 2px; }
+.dp-func { margin-bottom: 10px; }
+.dp-func-name { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.dp-func-sig { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px; }
+.dp-func-desc { font-size: var(--text-sm); color: var(--text-muted); margin-top: 2px; }
+.dp-endpoint { margin-bottom: 14px; }
+.dp-method {
+  display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  padding: 1px 5px; border-radius: 3px; margin-right: 6px; vertical-align: middle;
+}
+.dp-method.GET { background: var(--method-get); color: #fff; }
+.dp-method.POST { background: var(--method-post); color: #fff; }
+.dp-method.PUT { background: var(--method-put); color: #fff; }
+.dp-method.DELETE { background: var(--method-delete); color: #fff; }
+.dp-path { font-family: var(--font-mono); font-size: var(--text-sm); vertical-align: middle; }
+.dp-field-table { width: 100%; font-size: var(--text-xs); margin-top: 6px; }
+.dp-field-table th {
+  text-align: left; font-weight: 600; color: var(--text-muted); padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dp-field-table td { padding: 3px 8px 3px 0; vertical-align: top; border-bottom: 1px solid rgba(51,51,56,0.5); }
+.dp-field-name { font-family: var(--font-mono); color: var(--text); }
+.dp-field-type { font-family: var(--font-mono); color: var(--text-muted); }
+.dp-note { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 4px; padding-left: 10px; text-indent: -10px; }
+.dp-note::before { content: "\2022 "; color: var(--text-muted); }
+.dp-issue { font-size: var(--text-sm); margin-bottom: 3px; }
+.dp-issue a { color: var(--accent); }
+.dp-status-badge {
+  display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px;
+  border-radius: 2px; margin-left: 8px; vertical-align: baseline; text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.dp-status-badge.done { background: var(--new); color: #fff; }
+.dp-status-badge.open { background: var(--changed); color: #fff; }
+.dp-status-badge.pending { background: var(--method-put); color: #fff; }
+
+/* Compare view in Changes tab */
+.dp-compare { display: flex; gap: 1px; margin-top: 8px; }
+.dp-compare-col { flex: 1; background: var(--bg); padding: 10px; border-radius: 4px; }
+.dp-compare-col-title { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+
+/* Code block */
+.dp-code {
+  background: var(--bg); padding: 8px 10px; border-radius: 4px; font-family: var(--font-mono);
+  font-size: var(--text-xs); color: var(--text); margin-top: 4px; overflow-x: auto;
+}
+
+/* Sub-labels for headers/status codes */
+.dp-sub-label { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); margin-top: 8px; margin-bottom: 4px; }
+
+/* Search overlay */
+.search-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6); z-index: 100; display: flex; justify-content: center; padding-top: 120px;
+}
+.search-box {
+  width: 500px; max-height: 400px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden;
+}
+.search-input {
+  width: 100%; padding: 12px 16px; border: none; background: transparent;
+  color: var(--text); font-family: inherit; font-size: var(--text-lg); outline: none;
+  border-bottom: 1px solid var(--border);
+}
+.search-results { max-height: 320px; overflow-y: auto; }
+.search-result {
+  padding: 8px 16px; cursor: pointer; font-size: var(--text-sm);
+}
+.search-result:hover { background: var(--surface-hover); }
+.search-result-title { color: var(--text); }
+.search-result-sub { font-size: var(--text-xs); color: var(--text-muted); font-family: var(--font-mono); }
+
+/* Keyboard hint */
+
+/* Theme picker */
+.theme-picker {
+  position: relative; margin-left: auto; display: flex; align-items: center;
+}
+.theme-picker-btn {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text-muted); font-family: inherit;
+  font-size: var(--text-xs); cursor: pointer; white-space: nowrap;
+}
+.theme-picker-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.theme-dropdown {
+  position: absolute; top: 100%; right: 0; margin-top: 4px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  min-width: 180px; max-height: 320px; overflow-y: auto; z-index: 60;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.theme-option {
+  padding: 6px 12px; cursor: pointer; font-size: var(--text-sm);
+  color: var(--text-muted); display: flex; align-items: center; gap: 8px;
+}
+.theme-option:hover { background: var(--surface-hover); color: var(--text); }
+.theme-option.active { color: var(--accent); }
+.theme-swatch {
+  width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0;
+  border: 1px solid rgba(128,128,128,0.3);
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THEMES — popular vim/neovim colorschemes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const THEMES = {
+  // ─── Dark ───
+  "catppuccin-mocha": { group: "dark", label: "Catppuccin Mocha", vars: { "bg": "#1e1e2e", "surface": "#313244", "surface-hover": "#45475a", "border": "#585b70", "text": "#cdd6f4", "text-muted": "#a6adc8", "accent": "#cba6f7", "method-get": "#a6e3a1", "method-post": "#89b4fa", "method-put": "#f9e2af", "method-delete": "#f38ba8", "new": "#a6e3a1", "changed": "#cba6f7", "removed": "#f38ba8", "edge-a": "#f5c2e7", "edge-b": "#89b4fa" } },
+  "catppuccin-frappe": { group: "dark", label: "Catppuccin Frapp\u00e9", vars: { "bg": "#303446", "surface": "#414559", "surface-hover": "#51576d", "border": "#626880", "text": "#c6d0f5", "text-muted": "#a5adce", "accent": "#ca9ee6", "method-get": "#a6d189", "method-post": "#8caaee", "method-put": "#e5c890", "method-delete": "#e78284", "new": "#a6d189", "changed": "#ca9ee6", "removed": "#e78284", "edge-a": "#f4b8e4", "edge-b": "#85c1dc" } },
+  "catppuccin-macchiato": { group: "dark", label: "Catppuccin Macchiato", vars: { "bg": "#24273a", "surface": "#363a4f", "surface-hover": "#494d64", "border": "#5b6078", "text": "#cad3f5", "text-muted": "#a5adcb", "accent": "#c6a0f6", "method-get": "#a6da95", "method-post": "#8aadf4", "method-put": "#eed49f", "method-delete": "#ed8796", "new": "#a6da95", "changed": "#c6a0f6", "removed": "#ed8796", "edge-a": "#f5bde6", "edge-b": "#7dc4e4" } },
+  "tokyo-night": { group: "dark", label: "Tokyo Night", vars: { "bg": "#1a1b26", "surface": "#16161e", "surface-hover": "#292e42", "border": "#414868", "text": "#c0caf5", "text-muted": "#565f89", "accent": "#bb9af7", "method-get": "#9ece6a", "method-post": "#7aa2f7", "method-put": "#e0af68", "method-delete": "#f7768e", "new": "#9ece6a", "changed": "#bb9af7", "removed": "#f7768e", "edge-a": "#bb9af7", "edge-b": "#7dcfff" } },
+  "tokyo-night-storm": { group: "dark", label: "Tokyo Night Storm", vars: { "bg": "#24283b", "surface": "#1f2335", "surface-hover": "#292e42", "border": "#3b4261", "text": "#c0caf5", "text-muted": "#545c7e", "accent": "#ff007c", "method-get": "#9ece6a", "method-post": "#7aa2f7", "method-put": "#e0af68", "method-delete": "#f7768e", "new": "#9ece6a", "changed": "#ff007c", "removed": "#f7768e", "edge-a": "#ff007c", "edge-b": "#7dcfff" } },
+  "tokyonight-moon": { group: "dark", label: "Tokyo Night Moon", vars: { "bg": "#222436", "surface": "#1e2030", "surface-hover": "#2f334d", "border": "#3b4261", "text": "#c8d3f5", "text-muted": "#636da6", "accent": "#c099ff", "method-get": "#c3e88d", "method-post": "#82aaff", "method-put": "#ffc777", "method-delete": "#ff757f", "new": "#c3e88d", "changed": "#c099ff", "removed": "#ff757f", "edge-a": "#fca7ea", "edge-b": "#86e1fc" } },
+  "gruvbox-dark": { group: "dark", label: "Gruvbox Dark", vars: { "bg": "#282828", "surface": "#3c3836", "surface-hover": "#504945", "border": "#665c54", "text": "#ebdbb2", "text-muted": "#928374", "accent": "#fe8019", "method-get": "#b8bb26", "method-post": "#83a598", "method-put": "#fabd2f", "method-delete": "#fb4934", "new": "#b8bb26", "changed": "#fe8019", "removed": "#fb4934", "edge-a": "#fe8019", "edge-b": "#8ec07c" } },
+  "nord": { group: "dark", label: "Nord", vars: { "bg": "#2e3440", "surface": "#3b4252", "surface-hover": "#434c5e", "border": "#4c566a", "text": "#d8dee9", "text-muted": "#7b88a1", "accent": "#88c0d0", "method-get": "#a3be8c", "method-post": "#81a1c1", "method-put": "#ebcb8b", "method-delete": "#bf616a", "new": "#a3be8c", "changed": "#88c0d0", "removed": "#bf616a", "edge-a": "#b48ead", "edge-b": "#88c0d0" } },
+  "dracula": { group: "dark", label: "Dracula", vars: { "bg": "#282a36", "surface": "#44475a", "surface-hover": "#515473", "border": "#6272a4", "text": "#f8f8f2", "text-muted": "#6272a4", "accent": "#ff79c6", "method-get": "#50fa7b", "method-post": "#bd93f9", "method-put": "#f1fa8c", "method-delete": "#ff5555", "new": "#50fa7b", "changed": "#ff79c6", "removed": "#ff5555", "edge-a": "#ff79c6", "edge-b": "#8be9fd" } },
+  "one-dark": { group: "dark", label: "One Dark", vars: { "bg": "#282c34", "surface": "#21252b", "surface-hover": "#2c313a", "border": "#3e4452", "text": "#abb2bf", "text-muted": "#5c6370", "accent": "#c678dd", "method-get": "#98c379", "method-post": "#61afef", "method-put": "#e5c07b", "method-delete": "#e06c75", "new": "#98c379", "changed": "#c678dd", "removed": "#e06c75", "edge-a": "#c678dd", "edge-b": "#56b6c2" } },
+  "solarized-dark": { group: "dark", label: "Solarized Dark", vars: { "bg": "#002b36", "surface": "#073642", "surface-hover": "#0a4050", "border": "#586e75", "text": "#839496", "text-muted": "#586e75", "accent": "#b58900", "method-get": "#859900", "method-post": "#268bd2", "method-put": "#b58900", "method-delete": "#dc322f", "new": "#859900", "changed": "#b58900", "removed": "#dc322f", "edge-a": "#b58900", "edge-b": "#2aa198" } },
+  "rose-pine": { group: "dark", label: "Ros\u00e9 Pine", vars: { "bg": "#191724", "surface": "#1f1d2e", "surface-hover": "#26233a", "border": "#403d52", "text": "#e0def4", "text-muted": "#6e6a86", "accent": "#ebbcba", "method-get": "#9ccfd8", "method-post": "#c4a7e7", "method-put": "#f6c177", "method-delete": "#eb6f92", "new": "#9ccfd8", "changed": "#ebbcba", "removed": "#eb6f92", "edge-a": "#f6c177", "edge-b": "#31748f" } },
+  "rose-pine-moon": { group: "dark", label: "Ros\u00e9 Pine Moon", vars: { "bg": "#232136", "surface": "#2a273f", "surface-hover": "#393552", "border": "#44415a", "text": "#e0def4", "text-muted": "#6e6a86", "accent": "#c4a7e7", "method-get": "#9ccfd8", "method-post": "#c4a7e7", "method-put": "#f6c177", "method-delete": "#eb6f92", "new": "#9ccfd8", "changed": "#c4a7e7", "removed": "#eb6f92", "edge-a": "#ea9a97", "edge-b": "#3e8fb0" } },
+  "kanagawa": { group: "dark", label: "Kanagawa", vars: { "bg": "#1f1f28", "surface": "#2a2a37", "surface-hover": "#363646", "border": "#54546d", "text": "#dcd7ba", "text-muted": "#727169", "accent": "#957fb8", "method-get": "#98bb6c", "method-post": "#7e9cd8", "method-put": "#e6c384", "method-delete": "#c34043", "new": "#98bb6c", "changed": "#957fb8", "removed": "#c34043", "edge-a": "#d27e99", "edge-b": "#7aa89f" } },
+  "everforest-dark": { group: "dark", label: "Everforest Dark", vars: { "bg": "#2d353b", "surface": "#343f44", "surface-hover": "#3d484d", "border": "#56635f", "text": "#d3c6aa", "text-muted": "#859289", "accent": "#a7c080", "method-get": "#a7c080", "method-post": "#7fbbb3", "method-put": "#dbbc7f", "method-delete": "#e67e80", "new": "#a7c080", "changed": "#a7c080", "removed": "#e67e80", "edge-a": "#a7c080", "edge-b": "#83c092" } },
+  "nightfox": { group: "dark", label: "Nightfox", vars: { "bg": "#192330", "surface": "#212e3f", "surface-hover": "#29394f", "border": "#39506d", "text": "#cdcecf", "text-muted": "#738091", "accent": "#c94f6d", "method-get": "#81b29a", "method-post": "#719cd6", "method-put": "#dbc074", "method-delete": "#c94f6d", "new": "#81b29a", "changed": "#c94f6d", "removed": "#c94f6d", "edge-a": "#c94f6d", "edge-b": "#63cdcf" } },
+  "carbonfox": { group: "dark", label: "Carbonfox", vars: { "bg": "#161616", "surface": "#252525", "surface-hover": "#353535", "border": "#484848", "text": "#f2f4f8", "text-muted": "#7b7c7e", "accent": "#ee5396", "method-get": "#25be6a", "method-post": "#78a9ff", "method-put": "#fdce68", "method-delete": "#ee5396", "new": "#25be6a", "changed": "#ee5396", "removed": "#ee5396", "edge-a": "#be95ff", "edge-b": "#33b1ff" } },
+  "github-dark": { group: "dark", label: "GitHub Dark", vars: { "bg": "#0d1117", "surface": "#161b22", "surface-hover": "#1c2128", "border": "#30363d", "text": "#e6edf3", "text-muted": "#8b949e", "accent": "#58a6ff", "method-get": "#3fb950", "method-post": "#58a6ff", "method-put": "#d29922", "method-delete": "#f85149", "new": "#3fb950", "changed": "#58a6ff", "removed": "#f85149", "edge-a": "#bc8cff", "edge-b": "#79c0ff" } },
+  "ayu-dark": { group: "dark", label: "Ayu Dark", vars: { "bg": "#0b0e14", "surface": "#11151c", "surface-hover": "#1a1f29", "border": "#2a2f3a", "text": "#bfbdb6", "text-muted": "#636a76", "accent": "#e6b450", "method-get": "#7fd962", "method-post": "#59c2ff", "method-put": "#e6b450", "method-delete": "#d95757", "new": "#7fd962", "changed": "#e6b450", "removed": "#d95757", "edge-a": "#e6b450", "edge-b": "#73b8ff" } },
+  "ayu-mirage": { group: "dark", label: "Ayu Mirage", vars: { "bg": "#1f2430", "surface": "#242936", "surface-hover": "#2b303b", "border": "#3d4455", "text": "#cccac2", "text-muted": "#707a8c", "accent": "#ffcc66", "method-get": "#87d96c", "method-post": "#73d0ff", "method-put": "#ffcc66", "method-delete": "#f28779", "new": "#87d96c", "changed": "#ffcc66", "removed": "#f28779", "edge-a": "#ffcc66", "edge-b": "#5ccfe6" } },
+  "monokai-pro": { group: "dark", label: "Monokai Pro", vars: { "bg": "#2d2a2e", "surface": "#383539", "surface-hover": "#423f46", "border": "#5b585e", "text": "#fcfcfa", "text-muted": "#939293", "accent": "#ff6188", "method-get": "#a9dc76", "method-post": "#78dce8", "method-put": "#ffd866", "method-delete": "#ff6188", "new": "#a9dc76", "changed": "#ff6188", "removed": "#ff6188", "edge-a": "#ab9df2", "edge-b": "#78dce8" } },
+  "material-deep-ocean": { group: "dark", label: "Material Deep Ocean", vars: { "bg": "#0f111a", "surface": "#181a29", "surface-hover": "#1f2233", "border": "#2b2f40", "text": "#a6accd", "text-muted": "#717cb4", "accent": "#89ddff", "method-get": "#c3e88d", "method-post": "#82aaff", "method-put": "#ffcb6b", "method-delete": "#f07178", "new": "#c3e88d", "changed": "#89ddff", "removed": "#f07178", "edge-a": "#c792ea", "edge-b": "#89ddff" } },
+  "palenight": { group: "dark", label: "Palenight", vars: { "bg": "#292d3e", "surface": "#2f3344", "surface-hover": "#373b4e", "border": "#444866", "text": "#a6accd", "text-muted": "#676e95", "accent": "#c792ea", "method-get": "#c3e88d", "method-post": "#82aaff", "method-put": "#ffcb6b", "method-delete": "#f07178", "new": "#c3e88d", "changed": "#c792ea", "removed": "#f07178", "edge-a": "#c792ea", "edge-b": "#89ddff" } },
+  // ─── Light ───
+  "catppuccin-latte": { group: "light", label: "Catppuccin Latte", vars: { "bg": "#eff1f5", "surface": "#e6e9ef", "surface-hover": "#ccd0da", "border": "#bcc0cc", "text": "#4c4f69", "text-muted": "#6c6f85", "accent": "#8839ef", "method-get": "#40a02b", "method-post": "#1e66f5", "method-put": "#df8e1d", "method-delete": "#d20f39", "new": "#40a02b", "changed": "#8839ef", "removed": "#d20f39", "edge-a": "#ea76cb", "edge-b": "#04a5e5" } },
+  "tokyo-night-light": { group: "light", label: "Tokyo Night Light", vars: { "bg": "#d5d6db", "surface": "#cbccd1", "surface-hover": "#c4c5ca", "border": "#b4b5b9", "text": "#343b58", "text-muted": "#9699a3", "accent": "#965027", "method-get": "#485e30", "method-post": "#34548a", "method-put": "#8f5e15", "method-delete": "#8c4351", "new": "#485e30", "changed": "#965027", "removed": "#8c4351", "edge-a": "#5a4a78", "edge-b": "#166775" } },
+  "gruvbox-light": { group: "light", label: "Gruvbox Light", vars: { "bg": "#fbf1c7", "surface": "#ebdbb2", "surface-hover": "#d5c4a1", "border": "#bdae93", "text": "#3c3836", "text-muted": "#7c6f64", "accent": "#af3a03", "method-get": "#79740e", "method-post": "#076678", "method-put": "#b57614", "method-delete": "#9d0006", "new": "#79740e", "changed": "#af3a03", "removed": "#9d0006", "edge-a": "#af3a03", "edge-b": "#427b58" } },
+  "solarized-light": { group: "light", label: "Solarized Light", vars: { "bg": "#fdf6e3", "surface": "#eee8d5", "surface-hover": "#e4ddc8", "border": "#93a1a1", "text": "#657b83", "text-muted": "#93a1a1", "accent": "#cb4b16", "method-get": "#859900", "method-post": "#268bd2", "method-put": "#b58900", "method-delete": "#dc322f", "new": "#859900", "changed": "#cb4b16", "removed": "#dc322f", "edge-a": "#d33682", "edge-b": "#2aa198" } },
+  "rose-pine-dawn": { group: "light", label: "Ros\u00e9 Pine Dawn", vars: { "bg": "#faf4ed", "surface": "#fffaf3", "surface-hover": "#f2e9e1", "border": "#dfdad9", "text": "#575279", "text-muted": "#9893a5", "accent": "#b4637a", "method-get": "#56949f", "method-post": "#907aa9", "method-put": "#ea9d34", "method-delete": "#b4637a", "new": "#56949f", "changed": "#b4637a", "removed": "#b4637a", "edge-a": "#ea9d34", "edge-b": "#286983" } },
+  "everforest-light": { group: "light", label: "Everforest Light", vars: { "bg": "#fdf6e3", "surface": "#f3ead3", "surface-hover": "#eae4ca", "border": "#d4c8a5", "text": "#5c6a72", "text-muted": "#829181", "accent": "#8da101", "method-get": "#8da101", "method-post": "#5f9b93", "method-put": "#dfa000", "method-delete": "#f85552", "new": "#8da101", "changed": "#8da101", "removed": "#f85552", "edge-a": "#93b259", "edge-b": "#35a77c" } },
+  "one-light": { group: "light", label: "One Light", vars: { "bg": "#fafafa", "surface": "#f0f0f0", "surface-hover": "#e5e5e6", "border": "#d4d4d4", "text": "#383a42", "text-muted": "#a0a1a7", "accent": "#a626a4", "method-get": "#50a14f", "method-post": "#4078f2", "method-put": "#c18401", "method-delete": "#e45649", "new": "#50a14f", "changed": "#a626a4", "removed": "#e45649", "edge-a": "#a626a4", "edge-b": "#0184bc" } },
+  "github-light": { group: "light", label: "GitHub Light", vars: { "bg": "#ffffff", "surface": "#f6f8fa", "surface-hover": "#ebedf0", "border": "#d0d7de", "text": "#1f2328", "text-muted": "#656d76", "accent": "#0969da", "method-get": "#1a7f37", "method-post": "#0969da", "method-put": "#9a6700", "method-delete": "#cf222e", "new": "#1a7f37", "changed": "#0969da", "removed": "#cf222e", "edge-a": "#8250df", "edge-b": "#0550ae" } },
+  "ayu-light": { group: "light", label: "Ayu Light", vars: { "bg": "#fafafa", "surface": "#f0f0f0", "surface-hover": "#e7e8e9", "border": "#d8d8d7", "text": "#5c6166", "text-muted": "#8a9199", "accent": "#f2ae49", "method-get": "#86b300", "method-post": "#36a3d9", "method-put": "#f2ae49", "method-delete": "#f07171", "new": "#86b300", "changed": "#f2ae49", "removed": "#f07171", "edge-a": "#a37acc", "edge-b": "#399ee6" } },
+  "dayfox": { group: "light", label: "Dayfox", vars: { "bg": "#f6f2ee", "surface": "#ebe7e4", "surface-hover": "#e2deda", "border": "#ccc8c4", "text": "#3d2b5a", "text-muted": "#837486", "accent": "#a5222f", "method-get": "#396847", "method-post": "#2848a9", "method-put": "#a06c25", "method-delete": "#a5222f", "new": "#396847", "changed": "#a5222f", "removed": "#a5222f", "edge-a": "#6e33ce", "edge-b": "#287980" } },
+  "kanagawa-lotus": { group: "light", label: "Kanagawa Lotus", vars: { "bg": "#f2ecbc", "surface": "#e7dba0", "surface-hover": "#dcd28c", "border": "#c9b77c", "text": "#545464", "text-muted": "#8a8980", "accent": "#624c83", "method-get": "#6f894e", "method-post": "#4d699b", "method-put": "#cc6d00", "method-delete": "#c84053", "new": "#6f894e", "changed": "#624c83", "removed": "#c84053", "edge-a": "#b35b79", "edge-b": "#597b75" } }
+};
+
+let _currentTheme = null;
+
+function applyTheme(themeId) {
+  const theme = THEMES[themeId];
+  if (!theme) return;
+  _currentTheme = themeId;
+  const root = document.documentElement;
+  Object.entries(theme.vars).forEach(([k, v]) => root.style.setProperty("--" + k, v));
+  try { localStorage.setItem("arch-viewer-theme", themeId); } catch(e) {}
+}
+
+function getInitialTheme(defaultTheme) {
+  try {
+    const saved = localStorage.getItem("arch-viewer-theme");
+    if (saved && THEMES[saved]) return saved;
+  } catch(e) {}
+  return defaultTheme && THEMES[defaultTheme] ? defaultTheme : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ARCHITECTURE VIEWER ENGINE — generic, reusable
+//
+// To create your own architecture diagram, call:
+//
+//   createArchitectureViewer({
+//     title:  "My System Architecture",
+//     tabs:   [{ id: "current", label: "Current" }, { id: "target", label: "Target" }],
+//     nodes:  { "node-id": { title, sub, category, description, files[], functions[], endpoints[], issues[], notes[] } },
+//     scenes: { "scene-id": { tab, label, width, height, nodes: [{ id, x, y }], edges: [{ from, to, label, desc, endpoints[] }], notes } },
+//     links: {
+//       files:  [{ baseUrl: "https://github.com/org/repo/blob/main/", pattern: /.*/ }],
+//       issues: [{ prefix: "repo#", url: "https://github.com/org/repo/issues/" }]
+//     }
+//   });
+//
+// Nodes:
+//   title         — display name
+//   sub           — subtitle (file, module)
+//   category      — grouping label
+//   description   — full text shown in detail panel
+//   changeStatus  — "new" | "changed" | "removed" | "unchanged" (for change-tracking scenes)
+//   beforeState/afterState — comparison text for change nodes
+//   incomplete    — true to show a red dot (not yet implemented)
+//   files[]       — source file paths (linked via links.files config)
+//   functions[]   — { name, sig, desc, file }
+//   endpoints[]   — { method, path, headers[], requestBody[], responseBody[], statusCodes[], calledBy }
+//   issues[]      — { id, title, status: "done"|"open"|"pending", url }
+//   notes[]       — free-text notes (auto-linked)
+//
+// Scenes:
+//   tab           — which tab this scene belongs to
+//   label         — scene tab label
+//   width/height  — scene coordinate space (layout engine may expand)
+//   nodes[]       — { id, x, y, status? } positioned in scene coords
+//   edges[]       — { from, to, label, desc, endpoints[]? }
+//     endpoints[] — { method, path, in?, out? } shown as cards below the from-node
+//   notes         — bottom-of-scene annotation
+//
+// Links:
+//   files[]       — { baseUrl, pattern? } for linking source file paths
+//   issues[]      — { prefix, url } maps "prefix123" → url + "123"
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let VIEWER = { title: "", tabs: [], nodes: {}, scenes: {}, links: { files: [], issues: [] } };
+
+// ═══ YOUR DATA GOES HERE ═══
+// Define NODE_DATA and SCENES, then call createArchitectureViewer() at the bottom.
+// See the config schema above for the full API.
+
+// ─── EDGE ROUTING ─────────────────────────────────────────────────────────────
+
+/* These are recalculated from CSS rem in the Diagram component */
+const NODE_REM_W = 15;
+const NODE_REM_H = 4.35;
+/* Fallback px values — overridden at render time */
+let NODE_WIDTH = 195;
+let NODE_HEIGHT = 46;
+
+function getNodeCenter(node) {
+  return { x: node.x + (node.w || NODE_WIDTH) / 2, y: node.y + (node.h || NODE_HEIGHT) / 2 };
+}
+
+function getNodePort(node, side) {
+  const w = node.w || NODE_WIDTH;
+  const h = node.h || NODE_HEIGHT;
+  if (side === "right") return { x: Math.round(node.x + w), y: Math.round(node.y + h / 2) };
+  if (side === "left") return { x: Math.round(node.x), y: Math.round(node.y + h / 2) };
+  if (side === "bottom") return { x: Math.round(node.x + w / 2), y: Math.round(node.y + h) };
+  return { x: Math.round(node.x + w / 2), y: Math.round(node.y) };
+}
+
+function edgePathLength(route) {
+  if (route.fromSide === "right" || route.fromSide === "left") {
+    return Math.abs(route.midX - route.from.x) + Math.abs(route.to.y - route.from.y) + Math.abs(route.to.x - route.midX);
+  }
+  return Math.abs(route.midY - route.from.y) + Math.abs(route.to.x - route.from.x) + Math.abs(route.to.y - route.midY);
+}
+
+function routeEdge(fromNode, toNode) {
+  const dx = toNode.x - fromNode.x;
+  const dy = toNode.y - fromNode.y;
+  let fromSide, toSide;
+  /* If target is clearly to the right (dx > NODE_WIDTH), always go horizontal-first.
+     This prevents vertical edges from User that cross through neighboring nodes. */
+  if (dx >= NODE_WIDTH || Math.abs(dx) > Math.abs(dy)) {
+    fromSide = dx > 0 ? "right" : "left";
+    toSide = dx > 0 ? "left" : "right";
+  } else {
+    fromSide = dy > 0 ? "bottom" : "top";
+    toSide = dy > 0 ? "top" : "bottom";
+  }
+  const from = getNodePort(fromNode, fromSide);
+  const to = getNodePort(toNode, toSide);
+  const midX = Math.round((from.x + to.x) / 2);
+  const midY = Math.round((from.y + to.y) / 2);
+  let path;
+  if (fromSide === "right" || fromSide === "left") {
+    path = `M${from.x},${from.y} L${midX},${from.y} L${midX},${to.y} L${to.x},${to.y}`;
+  } else {
+    path = `M${from.x},${from.y} L${from.x},${midY} L${to.x},${midY} L${to.x},${to.y}`;
+  }
+  return { path, from, to, midX, midY, fromSide };
+}
+
+/* Walk the L-shaped path and return a point for the label.
+   Starts at 50% of total length, then slides along the path if
+   the point overlaps any node bounding box. `allNodes` is an array
+   of {x, y, w, h} in the same coordinate space as the route. */
+function edgeLabelPoint(route, allNodes, labelHW) {
+  /* Build an array of waypoints along the path */
+  let pts;
+  if (route.fromSide === "right" || route.fromSide === "left") {
+    pts = [
+      route.from,
+      { x: route.midX, y: route.from.y },
+      { x: route.midX, y: route.to.y },
+      route.to
+    ];
+  } else {
+    pts = [
+      route.from,
+      { x: route.from.x, y: route.midY },
+      { x: route.to.x, y: route.midY },
+      route.to
+    ];
+  }
+  /* Compute cumulative distances */
+  const dists = [0];
+  for (let i = 1; i < pts.length; i++) {
+    dists.push(dists[i - 1] + Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y));
+  }
+  const total = dists[dists.length - 1];
+  if (total === 0) return route.from;
+
+  /* Interpolate a point at distance `d` along the path */
+  function pointAtDist(d) {
+    for (let i = 1; i < pts.length; i++) {
+      if (dists[i] >= d) {
+        const segLen = dists[i] - dists[i - 1];
+        const t = segLen > 0 ? (d - dists[i - 1]) / segLen : 0;
+        return {
+          x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t,
+          y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t
+        };
+      }
+    }
+    return pts[pts.length - 1];
+  }
+
+  /* Check if a label centered at `p` overlaps any node box.
+     Labels use transform: translate(-50%, -50%), so we pad each
+     node by the label's half-width and half-height. */
+  const LABEL_HW = labelHW || 44;
+  const LABEL_HH = 12;
+  function hitsNode(p) {
+    if (!allNodes) return false;
+    return allNodes.some(n =>
+      p.x >= n.x - LABEL_HW && p.x <= n.x + n.w + LABEL_HW &&
+      p.y >= n.y - LABEL_HH && p.y <= n.y + n.h + LABEL_HH
+    );
+  }
+
+  /* Scan the full path to find all clear gaps, then place label at the center
+     of the largest clear gap (preferring gaps closer to the 50% midpoint). */
+  const half = total / 2;
+  const pt = pointAtDist(half);
+  if (!hitsNode(pt)) return pt;
+
+  const step = 4;
+  const samples = Math.ceil(total / step);
+  /* Find all clear runs along the path */
+  let runs = [];
+  let runStart = -1;
+  for (let i = 0; i <= samples; i++) {
+    const d = Math.min(i * step, total);
+    const p = pointAtDist(d);
+    if (!hitsNode(p)) {
+      if (runStart < 0) runStart = d;
+    } else {
+      if (runStart >= 0) { runs.push({ start: runStart, end: d - step }); runStart = -1; }
+    }
+  }
+  if (runStart >= 0) runs.push({ start: runStart, end: total });
+
+  if (runs.length > 0) {
+    /* Pick the run whose center is closest to the path midpoint */
+    let best = null, bestDist = Infinity;
+    for (const r of runs) {
+      const mid = (r.start + r.end) / 2;
+      const dist = Math.abs(mid - half);
+      if (dist < bestDist) { best = r; bestDist = dist; }
+    }
+    /* Always use the best gap's center — never place a label on an obstacle. */
+    return pointAtDist((best.start + best.end) / 2);
+  }
+
+  /* All on-path positions blocked — try vertical offset above/below the midpoint */
+  for (const dy of [-LABEL_HH * 2.5, LABEL_HH * 2.5, -LABEL_HH * 5, LABEL_HH * 5]) {
+    const shifted = { x: pt.x, y: pt.y + dy };
+    if (!hitsNode(shifted)) return shifted;
+  }
+  return pt;
+}
+
+// ─── COMPONENTS ───────────────────────────────────────────────────────────────
+
+function MethodBadge({ method }) {
+  return React.createElement("span", { className: `dp-method ${method}` }, method);
+}
+
+function FieldTable({ fields, title }) {
+  if (!fields || fields.length === 0) return null;
+  return React.createElement("div", null,
+    title && React.createElement("div", { className: "dp-sub-label" }, title),
+    React.createElement("table", { className: "dp-field-table" },
+      React.createElement("thead", null,
+        React.createElement("tr", null,
+          React.createElement("th", null, "Field"),
+          React.createElement("th", null, "Type"),
+          React.createElement("th", null, "Description")
+        )
+      ),
+      React.createElement("tbody", null,
+        fields.map((f, i) => React.createElement("tr", { key: i },
+          React.createElement("td", null, React.createElement("span", { className: "dp-field-name" }, f.name)),
+          React.createElement("td", null, React.createElement("span", { className: "dp-field-type" }, f.type)),
+          React.createElement("td", null, f.desc)
+        ))
+      )
+    )
+  );
+}
+
+// ─── GENERIC LINK HELPERS (use VIEWER.links config) ──────────────────────────
+
+function fileLink(path) {
+  if (!path) return null;
+  const clean = path.replace(/\s*\(.*\)/, "").trim();
+  const match = clean.match(/^([^:]+?)(?::(\d+)(?:-(\d+))?)?$/);
+  if (!match) return { href: null, text: path };
+  const filePath = match[1].replace(/^~/, "");
+  const line = match[2];
+  const lineEnd = match[3];
+  /* Find a matching file link config */
+  const cfg = (VIEWER.links.files || []).find(f => !f.pattern || f.pattern.test(filePath));
+  if (!cfg) return { href: null, text: path };
+  let href = cfg.baseUrl + filePath;
+  if (line && lineEnd) href += "#L" + line + "-L" + lineEnd;
+  else if (line) href += "#L" + line;
+  return { href, text: path };
+}
+
+function issueLink(ref) {
+  if (!ref) return null;
+  for (const cfg of (VIEWER.links.issues || [])) {
+    if (ref.startsWith(cfg.prefix)) {
+      const num = ref.slice(cfg.prefix.length);
+      return cfg.url + num;
+    }
+  }
+  return null;
+}
+
+function FileLink({ path }) {
+  const info = fileLink(path);
+  if (!info) return null;
+  if (info.href) return React.createElement("a", { href: info.href, target: "_blank", className: "dp-file" }, info.text);
+  return React.createElement("span", { className: "dp-file" }, info.text);
+}
+
+function EndpointBlock({ ep }) {
+  return React.createElement("div", { className: "dp-endpoint" },
+    React.createElement("div", null,
+      React.createElement(MethodBadge, { method: ep.method }),
+      React.createElement("span", { className: "dp-path" }, ep.path)
+    ),
+    ep.headers && React.createElement("div", null,
+      React.createElement("div", { className: "dp-sub-label" }, "Headers"),
+      ep.headers.map((h, i) => React.createElement("div", { key: i, className: "dp-code", style: { marginBottom: 2, marginTop: 0, padding: "2px 8px" } }, h))
+    ),
+    React.createElement(FieldTable, { fields: ep.requestBody, title: "Request body" }),
+    React.createElement(FieldTable, { fields: ep.responseBody, title: "Response body" }),
+    ep.statusCodes && React.createElement("div", null,
+      React.createElement("div", { className: "dp-sub-label" }, "Status codes"),
+      ep.statusCodes.map((s, i) => React.createElement("div", { key: i, style: { fontSize: "var(--text-xs)", marginBottom: 2 } },
+        React.createElement("code", null, s.code), " \u2014 ", s.desc
+      ))
+    ),
+    ep.calledBy && React.createElement("div", { style: { fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 4 } },
+      "Go: ", React.createElement(FileLink, { path: ep.calledBy })
+    )
+  );
+}
+
+/* Look up the full endpoint schema from VIEWER.nodes by matching method + last path segment */
+function findFullEndpoint(method, shortPath, fromId, toId) {
+  const segs = shortPath.replace(/\{[^}]*\}/g, '').split('/').filter(s => s && s !== '...');
+  const lastSeg = segs[segs.length - 1];
+  if (!lastSeg) return null;
+  for (const nodeId of [toId, fromId]) {
+    const data = VIEWER.nodes[nodeId];
+    if (!data || !data.endpoints) continue;
+    for (const ep of data.endpoints) {
+      if (ep.method !== method) continue;
+      const fullSegs = ep.path.replace(/\{[^}]*\}/g, '').split('/').filter(Boolean);
+      const fullLast = fullSegs[fullSegs.length - 1];
+      if (fullLast === lastSeg && fullSegs.length === segs.length) return ep;
+    }
+    /* Fallback: match just the last segment */
+    for (const ep of data.endpoints) {
+      if (ep.method !== method) continue;
+      if (ep.path.replace(/\{[^}]*\}/g, '').split('/').filter(Boolean).pop() === lastSeg) return ep;
+    }
+  }
+  return null;
+}
+
+function EndpointDetailPopover({ ep, fullEp, onClose }) {
+  return React.createElement("div", { className: "modal-backdrop", onClick: onClose },
+    React.createElement("div", {
+      className: "modal-box",
+      onClick: (e) => e.stopPropagation()
+    },
+      fullEp
+        ? React.createElement(EndpointBlock, { ep: fullEp })
+        : React.createElement("div", { className: "dp-endpoint" },
+            React.createElement("div", null,
+              React.createElement(MethodBadge, { method: ep.method }),
+              React.createElement("span", { className: "dp-path" }, ep.path)
+            ),
+            ep.in && React.createElement("div", { className: "dp-sub-label", style: { marginTop: 6 } }, "Request"),
+            ep.in && React.createElement("div", { style: { fontSize: "var(--text-sm)", color: "var(--text)" } }, ep.in),
+            ep.out && React.createElement("div", { className: "dp-sub-label", style: { marginTop: 6 } }, "Response"),
+            ep.out && React.createElement("div", { style: { fontSize: "var(--text-sm)", color: "var(--text)" } }, ep.out)
+          )
+    )
+  );
+}
+
+function DetailPanel({ nodeId, onClose }) {
+  const data = VIEWER.nodes[nodeId];
+  if (!data) return null;
+
+  const isChangeNode = nodeId.startsWith("changes-");
+
+  return React.createElement("div", { className: "detail-panel" },
+    React.createElement("div", { className: "dp-header" },
+      React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+        React.createElement("div", null,
+          React.createElement("div", { className: "dp-title" }, data.title),
+          data.sub && React.createElement("div", { style: { fontSize: "var(--text-sm)", color: "var(--text-muted)", marginBottom: "0.3rem" } }, data.sub),
+          React.createElement("div", { className: "dp-desc" }, data.description)
+        ),
+        React.createElement("button", {
+          onClick: onClose,
+          style: { background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 18, padding: "0 4px" }
+        }, "\u00d7")
+      ),
+      data.category && React.createElement("div", { style: { fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 4 } }, data.category)
+    ),
+
+    // Compare view for changes tab
+    isChangeNode && (data.beforeState || data.afterState) && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Comparison"),
+      React.createElement("div", { className: "dp-compare" },
+        React.createElement("div", { className: "dp-compare-col" },
+          React.createElement("div", { className: "dp-compare-col-title" }, "Before"),
+          React.createElement("div", { style: { fontSize: "var(--text-sm)", color: "var(--text)" } }, data.beforeState || "N/A")
+        ),
+        React.createElement("div", { className: "dp-compare-col" },
+          React.createElement("div", { className: "dp-compare-col-title" }, "After"),
+          React.createElement("div", { style: { fontSize: "var(--text-sm)", color: "var(--text)" } }, data.afterState || "N/A")
+        )
+      )
+    ),
+
+    // Files
+    data.files && data.files.length > 0 && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Files"),
+      data.files.map((f, i) => React.createElement("div", { key: i }, React.createElement(FileLink, { path: f })))
+    ),
+
+    // Functions
+    data.functions && data.functions.length > 0 && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Functions"),
+      data.functions.map((f, i) => React.createElement("div", { key: i, className: "dp-func" },
+        React.createElement("div", { className: "dp-func-name" }, f.name),
+        React.createElement("div", { className: "dp-func-sig" }, f.sig),
+        React.createElement("div", { className: "dp-func-desc" }, f.desc),
+        f.file && React.createElement("div", { style: { marginTop: 2 } }, React.createElement(FileLink, { path: f.file }))
+      ))
+    ),
+
+    // Endpoints
+    data.endpoints && data.endpoints.length > 0 && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Endpoints"),
+      data.endpoints.map((ep, i) => React.createElement(EndpointBlock, { key: i, ep }))
+    ),
+
+    // Issues
+    data.issues && data.issues.length > 0 && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Related issues"),
+      data.issues.map((iss, i) => React.createElement("div", { key: i, className: "dp-issue" },
+        iss.url
+          ? React.createElement("a", { href: iss.url, target: "_blank" }, iss.id)
+          : React.createElement("span", { style: { color: "var(--text)" } }, iss.id),
+        " \u2014 ", iss.title, "\u00a0",
+        React.createElement("span", { className: `dp-status-badge ${iss.status}` }, iss.status)
+      ))
+    ),
+
+    // Notes
+    data.notes && data.notes.length > 0 && React.createElement("div", { className: "dp-section" },
+      React.createElement("div", { className: "dp-section-title" }, "Notes"),
+      data.notes.map((n, i) => {
+        /* Auto-link URLs and render `backtick` spans as <code>.
+           Also link file:line references via the configured links.files patterns. */
+        const parts = n.split(/(https?:\/\/[^\s]+|`[^`]+`|[a-zA-Z_\/]+\.\w+:\d+(?:-\d+)?)/g);
+        return React.createElement("div", { key: i, className: "dp-note" },
+          parts.map((part, j) => {
+            if (!part) return null;
+            if (part.match(/^https?:\/\//)) return React.createElement("a", { key: j, href: part, target: "_blank" }, part);
+            if (part.startsWith('`') && part.endsWith('`')) return React.createElement("code", { key: j }, part.slice(1, -1));
+            if (part.match(/\.\w+:\d+/)) {
+              const info = fileLink(part);
+              return info && info.href ? React.createElement("a", { key: j, href: info.href, target: "_blank", style: { fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)" } }, part) : React.createElement("code", { key: j }, part);
+            }
+            return part;
+          })
+        );
+      })
+    )
+  );
+}
+
+function DiagramNode({ node, data, selected, dimmed, onClick, status }) {
+  const cls = ["dnode"];
+  if (selected) cls.push("selected");
+  if (dimmed) cls.push("dimmed");
+  if (status && status !== "unchanged") cls.push(`status-${status}`);
+  return React.createElement("div", {
+    className: cls.join(" "),
+    style: { left: node.x, top: node.y },
+    onClick: (e) => { e.stopPropagation(); onClick(node.id); }
+  },
+    status && status !== "unchanged" && React.createElement("span", { className: `change-badge ${status}` }, status),
+    data.incomplete && React.createElement("div", { className: "incomplete-dot", title: "Not yet implemented" }),
+    React.createElement("div", { className: "dnode-title" }, data.title),
+    React.createElement("div", { className: "dnode-sub" }, data.sub)
+  );
+}
+
+function EdgePopover({ edge, onClose }) {
+  return React.createElement("div", { className: "modal-backdrop", onClick: onClose },
+    React.createElement("div", {
+      className: "modal-box",
+      onClick: (e) => e.stopPropagation()
+    },
+      React.createElement("div", { className: "modal-title" }, edge.label),
+      React.createElement("div", { style: { color: "var(--text-muted)", lineHeight: 1.5 } }, edge.desc)
+    )
+  );
+}
+
+function Diagram({ scene, selectedNode, onSelectNode, hoveredNode, onHoverNode }) {
+  const [edgePopover, setEdgePopover] = useState(null);
+  const [epPopover, setEpPopover] = useState(null);
+  const containerRef = useRef(null);
+  const [containerSize, setContainerSize] = useState(null);
+  const sceneData = VIEWER.scenes[scene];
+
+  useEffect(() => {
+    const handler = () => { setEdgePopover(null); setEpPopover(null); };
+    window.addEventListener("close-popover", handler);
+    return () => window.removeEventListener("close-popover", handler);
+  }, []);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    /* Read size immediately on mount */
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) setContainerSize({ w: rect.width, h: rect.height });
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      if (width > 0 && height > 0) setContainerSize({ w: width, h: height });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+  if (!sceneData) return null;
+
+  const nodeMap = {};
+  sceneData.nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  /* Compute effective layout: endpoint cards become part of each node's bounding box.
+     Full 2D overlap resolution, then expose effective heights for edge/label passes. */
+  const { nodeEndpoints, adjustedNodes, adjustedW, adjustedH, effHeights, cardH: epCardH } = useMemo(() => {
+    /* 1. Group endpoints by from-node */
+    const epMap = {};
+    sceneData.edges.forEach(e => {
+      if (!e.endpoints) return;
+      if (!epMap[e.from]) epMap[e.from] = [];
+      e.endpoints.forEach(ep => epMap[e.from].push({ ...ep, _fromId: e.from, _toId: e.to }));
+    });
+    const rFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 13;
+    const nW = NODE_REM_W * rFs;
+    const nH = NODE_REM_H * rFs;
+    const cH = rFs * 2.6;
+    const gap = 14;
+
+    /* 2. Effective height per node = node box + endpoint cards */
+    const eff = {};
+    sceneData.nodes.forEach(n => {
+      const cards = (epMap[n.id] || []).length;
+      eff[n.id] = nH + (cards > 0 ? cards * cH + 6 : 0);
+    });
+
+    /* 3. Clone nodes and resolve vertical overlaps iteratively.
+       Node X positions from the scene config are preserved — the label
+       placement algorithm handles fitting labels in available space. */
+    const adj = sceneData.nodes.map(n => ({ ...n }));
+
+    /* 3b. Resolve vertical overlaps iteratively */
+    for (let pass = 0; pass < 20; pass++) {
+      let changed = false;
+      adj.sort((a, b) => a.y - b.y || a.x - b.x);
+      for (let i = 0; i < adj.length; i++) {
+        for (let j = i + 1; j < adj.length; j++) {
+          const a = adj[i], b = adj[j];
+          /* Skip if no horizontal overlap */
+          if (a.x >= b.x + nW + gap || b.x >= a.x + nW + gap) continue;
+          /* Push b down if it overlaps a's effective bbox */
+          const aBottom = a.y + eff[a.id] + gap;
+          if (b.y < aBottom) {
+            b.y = aBottom;
+            changed = true;
+          }
+        }
+      }
+      if (!changed) break;
+    }
+
+    /* 4. Compute scene dimensions from adjusted positions */
+    let maxX = 0;
+    let maxY = 0;
+    adj.forEach(n => {
+      const bottom = n.y + eff[n.id];
+      if (bottom > maxY) maxY = bottom;
+      const right = n.x + nW;
+      if (right > maxX) maxX = right;
+    });
+    return {
+      nodeEndpoints: epMap,
+      adjustedNodes: adj,
+      adjustedW: maxX + 20,
+      adjustedH: maxY + 40,
+      effHeights: eff,
+      cardH: cH
+    };
+  }, [scene]);
+
+  /* Build adjusted nodeMap for edge routing */
+  const adjNodeMap = {};
+  adjustedNodes.forEach(n => { adjNodeMap[n.id] = n; });
+
+  // Determine full connected path from hovered node (BFS through all edges)
+  const connectedToHover = useMemo(() => {
+    if (!hoveredNode) return null;
+    const set = new Set([hoveredNode]);
+    const queue = [hoveredNode];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      sceneData.edges.forEach(e => {
+        if (e.from === cur && !set.has(e.to)) { set.add(e.to); queue.push(e.to); }
+        if (e.to === cur && !set.has(e.from)) { set.add(e.from); queue.push(e.from); }
+      });
+    }
+    return set;
+  }, [hoveredNode, scene]);
+
+  const handleBgClick = useCallback(() => {
+    if (edgePopover || epPopover) { setEdgePopover(null); setEpPopover(null); return; }
+    if (selectedNode) onSelectNode(null);
+  }, [selectedNode, onSelectNode, edgePopover, epPopover]);
+
+  /* Compute actual node dimensions from CSS rem */
+  const rootFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
+  const nodeW = NODE_REM_W * rootFs;
+  const nodeH = NODE_REM_H * rootFs;
+
+  /* Position nodes as percentages of the container */
+  const sceneW = adjustedW;
+  const sceneH = adjustedH + 40;
+  const cw = containerSize ? containerSize.w : sceneW;
+  const ch = containerSize ? containerSize.h : sceneH;
+  /* Scale: fit scene to container. Allow up to 1.3x for sparse scenes. */
+  const sx = cw / sceneW;
+  const sy = ch / sceneH;
+  const scale = Math.min(sx, sy, 1.3) * 0.92;
+  const padX = (cw - sceneW * scale) / 2;
+  /* Vertical padding: use sy-based scale so it stays stable when only width changes (sidebar) */
+  const vScale = Math.min(sy, 1.3) * 0.92;
+  const padY = Math.max(16, (ch - sceneH * vScale) / 2);
+  /* Helper: convert scene x,y to container x,y */
+  const tx = (x) => padX + x * scale;
+  const ty = (y) => padY + y * scale;
+  const tw = (w) => w * scale;
+
+  return React.createElement("div", {
+    className: "diagram-container",
+    ref: containerRef,
+    onClick: handleBgClick
+  },
+  React.createElement("div", {
+    style: { position: "absolute", inset: 0 }
+  },
+    // SVG edges
+    React.createElement("svg", {
+      className: "edge-layer",
+      width: cw,
+      height: ch,
+      style: { overflow: "visible" }
+    },
+      React.createElement("defs", null,
+        React.createElement("marker", {
+          id: "arrowhead", markerWidth: 8, markerHeight: 6, refX: 8, refY: 3, orient: "auto"
+        },
+          React.createElement("polygon", { points: "0 0, 8 3, 0 6", fill: "var(--text-muted)" })
+        ),
+        React.createElement("marker", {
+          id: "arrowhead-dim", markerWidth: 8, markerHeight: 6, refX: 8, refY: 3, orient: "auto"
+        },
+          React.createElement("polygon", { points: "0 0, 8 3, 0 6", fill: "var(--text-muted)", opacity: 0.2 })
+        ),
+        React.createElement("filter", { id: "dot-glow", x: "-50%", y: "-50%", width: "200%", height: "200%" },
+          React.createElement("feGaussianBlur", { stdDeviation: "1.5", result: "blur" }),
+          React.createElement("feMerge", null,
+            React.createElement("feMergeNode", { in: "blur" }),
+            React.createElement("feMergeNode", { in: "SourceGraphic" })
+          )
+        )
+      ),
+      (() => {
+        /* Pre-compute all routes, then assign colors based on shared source node */
+        const routes = sceneData.edges.map((edge, i) => {
+          const fromNode = adjNodeMap[edge.from];
+          const toNode = adjNodeMap[edge.to];
+          if (!fromNode || !toNode) return null;
+          const tfn = { x: tx(fromNode.x), y: ty(fromNode.y), w: nodeW, h: nodeH };
+          const ttn = { x: tx(toNode.x), y: ty(toNode.y), w: nodeW, h: nodeH };
+          const route = routeEdge(tfn, ttn);
+          return { edge, i, route };
+        }).filter(Boolean);
+        /* Assign alternating colors globally so crossing edges are distinguishable */
+        routes.forEach((r, idx) => {
+          r.colorIdx = idx;
+        });
+        return routes.flatMap(r => {
+          const dimmed = hoveredNode && connectedToHover && !connectedToHover.has(r.edge.from) && !connectedToHover.has(r.edge.to);
+          const edgeColor = r.colorIdx % 2 === 0 ? "var(--edge-a)" : "var(--edge-b)";
+          const onEdgeClick = (e) => {
+            e.stopPropagation();
+            setEdgePopover({ edge: r.edge });
+          };
+          const pathEl = React.createElement("path", {
+            key: "p-" + r.i,
+            d: r.route.path,
+            fill: "none",
+            stroke: edgeColor,
+            strokeWidth: dimmed ? 1 : 1.2,
+            markerEnd: dimmed ? "url(#arrowhead-dim)" : "url(#arrowhead)",
+            className: dimmed ? "dimmed" : "",
+            onClick: onEdgeClick
+          });
+          const dur = Math.max(2, Math.min(5, edgePathLength(r.route) / 120));
+          const stagger = r.i * 0.5;
+          const dotEl = React.createElement("circle", {
+            key: "dot-" + r.i,
+            r: 2.5,
+            className: dimmed ? "flow-dot dimmed-dot" : "flow-dot",
+            fill: dimmed ? "none" : edgeColor,
+            filter: dimmed ? "none" : "url(#dot-glow)",
+            onClick: onEdgeClick
+          },
+            !dimmed && React.createElement("animateMotion", {
+              dur: dur + "s",
+              repeatCount: "indefinite",
+              path: r.route.path,
+              begin: stagger + "s"
+            }),
+            !dimmed && React.createElement("animate", {
+              attributeName: "opacity",
+              values: "0;0.9;0.9;0",
+              keyTimes: "0;0.08;0.88;1",
+              dur: dur + "s",
+              repeatCount: "indefinite",
+              begin: stagger + "s"
+            })
+          );
+          return [pathEl, dotEl];
+        });
+      })()
+    ),
+
+    // Edge labels — placed at midpoint, nudged to avoid OTHER nodes (not own endpoints)
+    (() => {
+      const allNodeBoxes = adjustedNodes.map(n => ({
+        id: n.id, x: tx(n.x), y: ty(n.y), w: nodeW, h: nodeH + (n.epCount || 0) * 28
+      }));
+      const rFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 13;
+      return sceneData.edges.map((edge, i) => {
+      const fromNode = adjNodeMap[edge.from];
+      const toNode = adjNodeMap[edge.to];
+      if (!fromNode || !toNode) return null;
+      const tfn = { x: tx(fromNode.x), y: ty(fromNode.y), w: nodeW, h: nodeH };
+      const ttn = { x: tx(toNode.x), y: ty(toNode.y), w: nodeW, h: nodeH };
+      const route = routeEdge(tfn, ttn);
+      const lw = (edge.label || "").length * rFs * 0.55 + 14;
+      const obstacles = allNodeBoxes.filter(n => n.id !== edge.from && n.id !== edge.to);
+      const pos = edgeLabelPoint(route, obstacles, lw / 2);
+      const dimmed = hoveredNode && connectedToHover && !connectedToHover.has(edge.from) && !connectedToHover.has(edge.to);
+      return React.createElement("div", {
+        key: `label-${i}`,
+        className: `edge-label ${dimmed ? "dimmed" : ""}`,
+        style: { left: Math.round(pos.x), top: Math.round(pos.y) },
+        onClick: (e) => {
+          e.stopPropagation();
+          setEdgePopover({ edge });
+        }
+      }, edge.label);
+    }).filter(Boolean);
+    })(),
+
+    // Nodes + endpoint cards below each node
+    (() => {
+      return adjustedNodes.flatMap(node => {
+        const data = VIEWER.nodes[node.id];
+        if (!data) return [];
+        const dimmed = hoveredNode && connectedToHover && !connectedToHover.has(node.id);
+        const els = [];
+        els.push(React.createElement(DiagramNode, {
+          key: node.id,
+          node: { ...node, x: tx(node.x), y: ty(node.y) },
+          data,
+          selected: selectedNode === node.id,
+          dimmed,
+          onClick: onSelectNode,
+          status: node.status
+        }));
+        /* Endpoint cards below this node */
+        const eps = nodeEndpoints[node.id] || [];
+        eps.forEach((ep, j) => {
+          els.push(React.createElement("div", {
+            key: `ep-${node.id}-${j}`,
+            className: `endpoint-card ${dimmed ? "dimmed" : ""}`,
+            style: { left: tx(node.x), top: ty(node.y) + nodeH + 4 + j * (epCardH || rootFs * 2.6) },
+            onClick: (e) => {
+              e.stopPropagation();
+              const fullEp = findFullEndpoint(ep.method, ep.path, ep._fromId, ep._toId);
+              setEpPopover({ ep, fullEp });
+            }
+          },
+            React.createElement("div", { className: "ep-head" },
+              React.createElement("span", { className: `ep-method ${ep.method}` }, ep.method),
+              React.createElement("span", { className: "ep-path" }, ep.path)
+            ),
+            (ep.in || ep.out) && React.createElement("div", { className: "ep-io" },
+              ep.in && React.createElement("span", { className: "ep-in" }, ep.in),
+              ep.in && ep.out && " ",
+              ep.out && React.createElement("span", { className: "ep-out" }, ep.out)
+            )
+          ));
+        });
+        return els;
+      });
+    })(),
+
+    // Scene notes
+    sceneData.notes && React.createElement("div", {
+      style: {
+        position: "absolute", bottom: 8, left: 0, right: 0, fontSize: "var(--text-xs)",
+        color: "var(--text-muted)", fontFamily: "var(--font-mono)", textAlign: "center", padding: "0 16px"
+      }
+    }, sceneData.notes),
+
+    null
+  ),
+  // Edge popover — OUTSIDE the scaled div so position:fixed works
+  edgePopover && ReactDOM.createPortal(
+    React.createElement(EdgePopover, {
+      edge: edgePopover.edge,
+      onClose: () => setEdgePopover(null)
+    }),
+    document.body
+  ),
+  // Endpoint detail popover
+  epPopover && ReactDOM.createPortal(
+    React.createElement(EndpointDetailPopover, {
+      ep: epPopover.ep,
+      fullEp: epPopover.fullEp,
+      onClose: () => setEpPopover(null)
+    }),
+    document.body
+  )
+  );
+}
+
+function SearchOverlay({ onClose, onSelect }) {
+  const [query, setQuery] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => { inputRef.current && inputRef.current.focus(); }, []);
+
+  const results = useMemo(() => {
+    if (!query.trim()) return [];
+    const q = query.toLowerCase();
+    const matches = [];
+    Object.entries(VIEWER.nodes).forEach(([id, data]) => {
+      const searchText = [
+        data.title, data.sub, data.description,
+        ...(data.endpoints || []).map(e => e.path),
+        ...(data.functions || []).map(f => f.name),
+        ...(data.notes || [])
+      ].join(" ").toLowerCase();
+      if (searchText.includes(q)) {
+        matches.push({ id, title: data.title, sub: data.sub || data.category });
+      }
+    });
+    return matches.slice(0, 15);
+  }, [query]);
+
+  return React.createElement("div", { className: "search-overlay", onClick: onClose },
+    React.createElement("div", { className: "search-box", onClick: e => e.stopPropagation() },
+      React.createElement("input", {
+        ref: inputRef,
+        className: "search-input",
+        placeholder: "Search nodes, endpoints, functions...",
+        value: query,
+        onChange: e => setQuery(e.target.value),
+        onKeyDown: e => {
+          if (e.key === "Escape") onClose();
+          if (e.key === "Enter" && results.length > 0) { onSelect(results[0].id); onClose(); }
+        }
+      }),
+      React.createElement("div", { className: "search-results" },
+        results.map(r => React.createElement("div", {
+          key: r.id, className: "search-result",
+          onClick: () => { onSelect(r.id); onClose(); }
+        },
+          React.createElement("div", { className: "search-result-title" }, r.title),
+          React.createElement("div", { className: "search-result-sub" }, r.sub)
+        ))
+      )
+    )
+  );
+}
+
+// ─── THEME PICKER ─────────────────────────────────────────────────────────────
+
+function ThemePicker() {
+  const [open, setOpen] = useState(false);
+  const [, forceUpdate] = useState(0);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const currentLabel = _currentTheme && THEMES[_currentTheme] ? THEMES[_currentTheme].label : "Theme";
+
+  const grouped = useMemo(() => {
+    const dark = [], light = [];
+    Object.entries(THEMES).forEach(([id, t]) => {
+      (t.group === "light" ? light : dark).push([id, t]);
+    });
+    return { dark, light };
+  }, []);
+
+  function renderGroup(label, items, isSecond) {
+    return [
+      React.createElement("div", {
+        key: "hdr-" + label,
+        style: { padding: "6px 12px 2px", fontSize: "var(--text-xs)", fontWeight: 600,
+          color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px",
+          borderTop: isSecond ? "1px solid var(--border)" : "none" }
+      }, label),
+      ...items.map(([id, theme]) =>
+        React.createElement("div", {
+          key: id,
+          className: "theme-option" + (_currentTheme === id ? " active" : ""),
+          onClick: () => { applyTheme(id); setOpen(false); forceUpdate(n => n + 1); }
+        },
+          React.createElement("span", { className: "theme-swatch", style: { background: theme.vars.bg } }),
+          React.createElement("span", { className: "theme-swatch", style: { background: theme.vars.accent } }),
+          theme.label
+        )
+      )
+    ];
+  }
+
+  return React.createElement("div", { className: "theme-picker", ref },
+    React.createElement("button", {
+      className: "theme-picker-btn",
+      onClick: () => setOpen(o => !o)
+    }, "\u25D1 " + currentLabel),
+    open && React.createElement("div", { className: "theme-dropdown" },
+      ...renderGroup("Dark", grouped.dark, false),
+      ...renderGroup("Light", grouped.light, true)
+    )
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+function App() {
+  const firstTab = VIEWER.tabs[0] ? VIEWER.tabs[0].id : "";
+  const firstScene = Object.keys(VIEWER.scenes)[0] || "";
+  const [tab, setTab] = useState(firstTab);
+  const [scene, setScene] = useState(firstScene);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [hoveredNode, setHoveredNode] = useState(null);
+  const [showSearch, setShowSearch] = useState(false);
+
+  const tabs = VIEWER.tabs;
+
+  const scenesForTab = useMemo(() => {
+    return Object.entries(VIEWER.scenes)
+      .filter(([, s]) => s.tab === tab)
+      .map(([id, s]) => ({ id, label: s.label }));
+  }, [tab]);
+
+  // Update scene when tab changes
+  const handleTabChange = useCallback((t) => {
+    setTab(t);
+    setSelectedNode(null);
+    const firstScene = Object.entries(VIEWER.scenes).find(([, s]) => s.tab === t);
+    if (firstScene) setScene(firstScene[0]);
+  }, []);
+
+  // Handle URL hash — restore state on load AND on popstate (back button)
+  const restoreFromHash = useCallback(() => {
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      const parts = hash.split("/");
+      if (parts[0] && VIEWER.scenes[parts[0]]) {
+        const s = VIEWER.scenes[parts[0]];
+        setTab(s.tab);
+        setScene(parts[0]);
+        if (parts[1] && VIEWER.nodes[parts[1]]) setSelectedNode(parts[1]);
+        return;
+      }
+    }
+    /* Fallback: restore from sessionStorage */
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("arch-viewer-state"));
+      if (saved && VIEWER.scenes[saved.scene]) {
+        setTab(saved.tab);
+        setScene(saved.scene);
+        if (saved.selectedNode) setSelectedNode(saved.selectedNode);
+      }
+    } catch(e) {}
+  }, []);
+  useEffect(() => { restoreFromHash(); }, []);
+  useEffect(() => {
+    window.addEventListener("popstate", restoreFromHash);
+    window.addEventListener("hashchange", restoreFromHash);
+    return () => {
+      window.removeEventListener("popstate", restoreFromHash);
+      window.removeEventListener("hashchange", restoreFromHash);
+    };
+  }, [restoreFromHash]);
+
+  useEffect(() => {
+    let hash = scene;
+    if (selectedNode) hash += "/" + selectedNode;
+    window.location.hash = hash;
+    /* Persist to sessionStorage so state survives link navigation + back */
+    try { sessionStorage.setItem("arch-viewer-state", JSON.stringify({ tab, scene, selectedNode })); } catch(e) {}
+  }, [tab, scene, selectedNode]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === "Escape") {
+        if (showSearch) { setShowSearch(false); return; }
+        /* Check if a modal is open — close that first, keep sidebar */
+        const backdrop = document.querySelector(".modal-backdrop");
+        if (backdrop) { window.dispatchEvent(new CustomEvent("close-popover")); return; }
+        setSelectedNode(null);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setShowSearch(s => !s);
+      }
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const idx = scenesForTab.findIndex(s => s.id === scene);
+        if (e.key === "ArrowLeft" && idx > 0) setScene(scenesForTab[idx - 1].id);
+        if (e.key === "ArrowRight" && idx < scenesForTab.length - 1) setScene(scenesForTab[idx + 1].id);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showSearch, scene, scenesForTab]);
+
+  const handleSelectNode = useCallback((id) => {
+    setSelectedNode(prev => prev === id ? null : id);
+  }, []);
+
+  // For search: find best scene for a node
+  const handleSearchSelect = useCallback((nodeId) => {
+    // Find a scene that contains this node (prefer current tab)
+    let bestScene = null;
+    Object.entries(VIEWER.scenes).forEach(([sid, s]) => {
+      if (s.nodes.some(n => n.id === nodeId)) {
+        if (!bestScene || s.tab === tab) bestScene = sid;
+      }
+    });
+    if (bestScene) {
+      setTab(VIEWER.scenes[bestScene].tab);
+      setScene(bestScene);
+    }
+    setSelectedNode(nodeId);
+  }, [tab]);
+
+  // Hover handling
+  const diagramRef = useRef(null);
+  useEffect(() => {
+    const el = diagramRef.current;
+    if (!el) return;
+    const onOver = (e) => {
+      const node = e.target.closest(".dnode");
+      if (node) {
+        const nodeId = node.querySelector(".dnode-title")?.textContent;
+        // Find node id by matching title
+        const sceneData = VIEWER.scenes[scene];
+        if (sceneData) {
+          const found = sceneData.nodes.find(n => VIEWER.nodes[n.id]?.title === nodeId);
+          if (found) setHoveredNode(found.id);
+        }
+      } else {
+        setHoveredNode(null);
+      }
+    };
+    const onOut = (e) => {
+      if (!e.target.closest(".dnode")) setHoveredNode(null);
+    };
+    el.addEventListener("mouseover", onOver);
+    el.addEventListener("mouseout", onOut);
+    return () => { el.removeEventListener("mouseover", onOver); el.removeEventListener("mouseout", onOut); };
+  }, [scene]);
+
+  return React.createElement("div", { className: "app" },
+    // Tab bar
+    React.createElement("div", { className: "tab-bar" },
+      tabs.map(t => React.createElement("button", {
+        key: t.id,
+        className: `tab-btn ${tab === t.id ? "active" : ""}`,
+        onClick: () => handleTabChange(t.id)
+      }, t.label)),
+      React.createElement(ThemePicker)
+    ),
+
+    // Scene bar
+    scenesForTab.length > 1 && React.createElement("div", { className: "scene-bar" },
+      scenesForTab.map(s => React.createElement("button", {
+        key: s.id,
+        className: `scene-btn ${scene === s.id ? "active" : ""}`,
+        onClick: () => { setScene(s.id); setSelectedNode(null); }
+      }, s.label))
+    ),
+
+    // Workspace
+    React.createElement("div", { className: "workspace" },
+      React.createElement("div", { className: "diagram-area", ref: diagramRef },
+        React.createElement(Diagram, {
+          scene, selectedNode, onSelectNode: handleSelectNode,
+          hoveredNode, onHoverNode: setHoveredNode
+        })
+      ),
+      selectedNode && React.createElement(DetailPanel, {
+        nodeId: selectedNode,
+        onClose: () => setSelectedNode(null)
+      })
+    ),
+
+    // Search
+    showSearch && React.createElement(SearchOverlay, {
+      onClose: () => setShowSearch(false),
+      onSelect: handleSearchSelect
+    }),
+
+    null
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUBLIC API — call this with your config to create an architecture viewer
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function createArchitectureViewer(config) {
+  VIEWER = {
+    title:  config.title || "Architecture Viewer",
+    tabs:   config.tabs || [],
+    nodes:  config.nodes || {},
+    scenes: config.scenes || {},
+    links:  { files: [], issues: [], ...(config.links || {}) }
+  };
+  document.title = VIEWER.title;
+  // Apply theme: saved in localStorage > config.theme > built-in default
+  const initialTheme = getInitialTheme(config.theme);
+  if (initialTheme) applyTheme(initialTheme);
+  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+}
+
+
+// ═══ GENERATED DATA ═══
+
+const NODE_DATA = {
+  // ── Original era (pre-refactor) ──────────────────────────
+  "orig-index": {
+    title: "index.ts", sub: "1,040 lines — GOD FILE",
+    category: "Original (pre-refactor)",
+    description: "The original entry point containing everything: state machine, transitions, timing, model switching, manual mode, plannotator, git recovery, round tracking, config UI, command registration.",
+    notes: ["Hub of a hub-and-spoke architecture — imported from 10 of 12 other modules", "Every feature change touched this file", "Mixed review, exec, and manual mode logic in one place"]
+  },
+  "orig-types": { title: "types.ts", sub: "118 lines", category: "Original", description: "Shared types: LoopState, Config, PromptSet, RoundResult, Phase, etc." },
+  "orig-config": { title: "config.ts", sub: "64 lines", category: "Original", description: "loadConfig, saveConfigField. Reads ~/.pi/agent/settings.json." },
+  "orig-context": { title: "context.ts", sub: "102 lines", category: "Original", description: "parseArgs, expandContextPaths, snapshotContextHashes, changedContextPaths." },
+  "orig-session": { title: "session.ts", sub: "39 lines — SHALLOW", category: "Original", description: "sanitize, modelToStr, findModel, getLastAssistant. Five tiny utility functions." },
+  "orig-verdicts": { title: "verdicts.ts", sub: "31 lines — SHALLOW", category: "Original", description: "Constants + matchVerdict, hasFixesComplete, stripVerdict regex functions." },
+  "orig-prompts": { title: "prompts.ts", sub: "19 lines — SHALLOW", category: "Original", description: "Thin router: promptSets record mapping LoopMode → PromptSet." },
+  "orig-prompts-review": { title: "prompts-review.ts", sub: "154 lines", category: "Original", description: "Review mode overseer + workhorse prompt builders." },
+  "orig-prompts-exec": { title: "prompts-exec.ts", sub: "118 lines", category: "Original", description: "Exec mode orchestrator + workhorse prompt builders." },
+  "orig-prompts-manual": { title: "prompts-manual.ts", sub: "115 lines", category: "Original", description: "Manual mode verify + fix prompt builders." },
+  "orig-reconstruct": { title: "reconstruct.ts", sub: "76 lines — SHALLOW", category: "Original", description: "reconstructState: recovers loop state from session entries." },
+  "orig-logview": { title: "log-view.ts", sub: "548 lines ✓ DEEP", category: "Original", description: "TUI log viewer. One function interface, deep implementation. Already a proper deep module." },
+  "orig-fixup": { title: "fixup-audit.ts", sub: "131 lines", category: "Original", description: "extractTaggedSHAs, snapshotPatchIds, detectUnchanged." },
+  "orig-git": { title: "git-manual.ts", sub: "189 lines", category: "Original", description: "resolveRange, getCommitList, checkGitState, fixGitState, etc." },
+  "orig-diffreview": { title: "diff-review.ts", sub: "159 lines", category: "Original", description: "reviewCommitInEditor, parseAnnotations. Editor-based annotation." },
+  "orig-tui": { title: "tui-runtime.ts", sub: "48 lines — SHALLOW", category: "Original", description: "loadPiAgent, loadTui. Only used by log-view.ts." },
+
+  // ── Current era (post-refactor) ──────────────────────────
+  "cur-index": { title: "index.ts", sub: "165 lines — thin router", category: "Current", description: "Command registration and pi event wiring. Delegates everything to engine." },
+  "cur-engine": {
+    title: "engine.ts", sub: "868 lines — NEW GOD FILE",
+    category: "Current",
+    description: "Absorbed session.ts, reconstruct.ts, context.ts, AND duplicated code from prompts.ts. Contains: state machine, verdict parsing, file I/O, context hashing, patch-id lifecycle, ModeHooks, model switching, timing, navigation.",
+    notes: [
+      "DUPLICATED: readFileContent, readDirContent, safeDirEntries, expandTilde, sanitize — all also in prompts.ts",
+      "LEAKED: verdict parsing regexes (prompt protocol owned by engine)",
+      "LEAKED: patch-id lifecycle steps (git internals known by engine)",
+      "LEAKED: ModeHooks with suppressLogs/suppressRoundIncrement (manual mode behavior in engine)",
+      "LEAKED: reviewMode flag checked 12 times — fresh vs incremental logic mixed into cycle"
+    ]
+  },
+  "cur-prompts": {
+    title: "prompts.ts", sub: "501 lines",
+    category: "Current",
+    description: "All prompt building (review, exec, manual) plus context file reading. Has its OWN copy of sanitize, readFileContent, expandTilde.",
+    notes: ["DUPLICATED: file I/O functions also exist in engine.ts", "All three modes' prompts mixed in one file"]
+  },
+  "cur-git": { title: "git.ts", sub: "273 lines", category: "Current", description: "All git operations. Clean facade via git.* object.", notes: ["Engine orchestrates patch-id lifecycle step-by-step using these primitives"] },
+  "cur-manual": { title: "manual.ts", sub: "268 lines", category: "Current", description: "Manual review flow: commit picking, editor review, plannotator.", notes: ["Coupled to engine through ModeHooks — engine has manual-specific conditionals"] },
+  "cur-logview": { title: "log-view.ts", sub: "597 lines ✓ DEEP", category: "Current", description: "TUI log viewer. Already a proper deep module." },
+  "cur-config": { title: "config.ts", sub: "83 lines ✓ DEEP", category: "Current", description: "Settings persistence. Already a proper deep module." },
+  "cur-diffreview": { title: "diff-review.ts", sub: "159 lines", category: "Current", description: "Editor-based annotation for manual mode." },
+  "cur-verdicts": { title: "verdicts.ts", sub: "4 lines", category: "Current", description: "Protocol constants: V_APPROVED, V_CHANGES, V_FIXES_COMPLETE." },
+  "cur-types": { title: "types.ts", sub: "15 lines", category: "Current", description: "Shared type aliases: LoopMode, ReviewMode, RoundResult." },
+
+  // ── Target era (one feature, one module) ─────────────────
+  "tgt-cycle": {
+    title: "cycle.ts", sub: "~150 lines — TURN ORCHESTRATION",
+    category: "Target — Core",
+    description: "Pure overseer↔workhorse loop. Only knows: there's an overseer turn and a workhorse turn. Modes tell it what to do at each step via ModeConfig callbacks. Composes session.ts and status.ts for platform ops.",
+    notes: [
+      "Interface: createCycle(pi, session, status) → { start(config), stop(), resume(), onAgentEnd() }",
+      "Owns ONLY: phase transitions, round counter, dispatching ModeConfig callbacks, detecting verdicts",
+      "Does NOT own: navigation, models, timing, prompts, logging decisions, round increment decisions",
+      "~150 lines — the thinnest possible orchestrator"
+    ]
+  },
+  "tgt-session": {
+    title: "session.ts", sub: "~160 lines — PI PLATFORM",
+    category: "Target — Infrastructure",
+    description: "Everything that talks to pi's session API. Navigation, anchors, model switching, editor blocking, assistant text extraction, session recovery.",
+    notes: [
+      "Interface: createSession(pi) → SessionHandle",
+      "SessionHandle: navigateToAnchor, navigateToEntry, setAgent, getLastAssistant, rememberAnchor, reconstructState, blockEditors, restoreEditors",
+      "Change pi's session API → only this module changes",
+      "Swap pi for another platform → only this module changes"
+    ]
+  },
+  "tgt-status": {
+    title: "status.ts", sub: "~60 lines — TIMING",
+    category: "Target — Infrastructure",
+    description: "Wall-clock tracking, pause/resume, status bar text, duration formatting.",
+    notes: [
+      "Interface: createStatus() → StatusHandle",
+      "StatusHandle: start, stop, update, pause, resume, totalElapsed, formatDuration, formatTime",
+      "Change status bar format → only this module changes"
+    ]
+  },
+  "tgt-verdict": {
+    title: "verdict.ts", sub: "~30 lines — PROTOCOL",
+    category: "Target — Infrastructure",
+    description: "Verdict wire format. Constants + parsing + stripping + sanitize. Previously leaked across engine.ts + prompts.ts + verdicts.ts. Now in one place.",
+    notes: [
+      "Exports: V_APPROVED, V_CHANGES, V_FIXES_COMPLETE, matchVerdict(), hasFixesComplete(), stripVerdict(), sanitize()",
+      "Change verdict format → only this module changes",
+      "Used by: cycle (transition detection), modes (prompt building)"
+    ]
+  },
+  "tgt-fresh": {
+    title: "review-fresh.ts", sub: "~150 lines",
+    category: "Target — Feature Module",
+    description: "Fresh review strategy. Holistic re-review each round. Resets to anchor, full prompt, no inter-round state.",
+    notes: [
+      "ModeConfig: navigate='anchor', full review prompt, no beforeWorkhorse/afterWorkhorse",
+      "Simple: just prompts + onApproved(notify+stop). No tracking between rounds.",
+      "Change fresh prompt wording → only this file"
+    ]
+  },
+  "tgt-incremental": {
+    title: "review-incremental.ts", sub: "~260 lines",
+    category: "Target — Feature Module",
+    description: "Incremental review strategy. Focused re-review. Keeps overseer context, passes workhorse summary, patch-id audit, context file tracking, unchanged commit detection.",
+    notes: [
+      "ModeConfig: navigate='leaf', passSummary=true, beforeWorkhorse (snapshot), afterWorkhorse (compare)",
+      "Owns: context hashing, file I/O utils, patch-id lifecycle calls to git.ts",
+      "All 'between rounds' intelligence lives here — not in the cycle",
+      "Change context tracking → only this file. Change patch-id → this + git.ts."
+    ]
+  },
+  "tgt-exec": {
+    title: "exec.ts", sub: "~170 lines",
+    category: "Target — Feature Module",
+    description: "Exec mode. Step-by-step plan execution. Orchestrator assigns tasks, workhorse implements, orchestrator verifies.",
+    notes: [
+      "Owns: exec prompts (orchestrator + workhorse), <task> tag extraction",
+      "Has its own incremental variant (short 're-check' on round 2+) — simple enough for one file",
+      "Change exec behavior → only this file"
+    ]
+  },
+  "tgt-manual": {
+    title: "manual.ts", sub: "~350 lines",
+    category: "Target — Feature Module",
+    description: "Manual mode. User-driven review with editor annotation or plannotator. Commit picking, git state recovery, inner loop management.",
+    notes: [
+      "Provides ModeConfig: onApproved (pause+afterInnerLoop), no round logging, round increment in onChangesRequested",
+      "Absorbs manual prompts from old prompts.ts. Owns its complete behavior.",
+      "No ModeHooks leaking into cycle — manual tells cycle what to do via ModeConfig"
+    ]
+  },
+  "tgt-index": {
+    title: "index.ts", sub: "~160 lines — router",
+    category: "Target — Wiring",
+    description: "Command router. Creates the cycle, creates all mode modules, registers /loop commands. Selects fresh vs incremental based on config.",
+    notes: [
+      "Creates: cycle, freshReview, incrementalReview, exec, manual",
+      "/loop → checks config → delegates to fresh or incremental review",
+      "/loop:exec → delegates to exec",
+      "/loop:manual → delegates to manual"
+    ]
+  },
+  "tgt-git": {
+    title: "git.ts", sub: "~300 lines ✓ DEEP",
+    category: "Target — Support Module",
+    description: "All git operations + opaque patch-id lifecycle. snapshotBeforeWorkhorse() and detectUnchangedAfterWorkhorse() hide the multi-step protocol.",
+    notes: [
+      "New: PatchSnapshot (opaque), snapshotBeforeWorkhorse(), detectUnchangedAfterWorkhorse()",
+      "Internal: extractTaggedSHAs, findSnapshotBase, snapshotPatchIds, resolveSubjects — all hidden",
+      "Used by: review-incremental.ts and manual.ts"
+    ]
+  },
+  "tgt-logview": { title: "log-view.ts", sub: "~600 lines ✓ DEEP", category: "Target — Support Module", description: "TUI log viewer. Already deep. Unchanged." },
+  "tgt-config": { title: "config.ts", sub: "~83 lines ✓ DEEP", category: "Target — Support Module", description: "Settings persistence. Already deep. Unchanged." },
+  "tgt-diffreview": { title: "diff-review.ts", sub: "~159 lines", category: "Target — Support Module", description: "Editor-based annotation. Internal to manual.ts." },
+  "tgt-verdicts": { title: "verdicts.ts", sub: "4 lines", category: "Target — Support Module", description: "Protocol constants. Used by cycle + each mode's prompt builders." },
+  "tgt-types": { title: "types.ts", sub: "~15 lines", category: "Target — Support Module", description: "Shared type aliases." },
+
+  // ── Changes view ──────────────────────────────────────────
+  "chg-engine-dies": {
+    title: "engine.ts → cycle.ts", sub: "868 → 400 lines",
+    category: "Structural Change",
+    description: "engine.ts is replaced by cycle.ts. The cycle is mode-agnostic: it doesn't know what review, exec, or manual mean. Modes provide ModeConfig with prompt builders and lifecycle hooks.",
+    changeStatus: "changed",
+    beforeState: "engine.ts (868 lines)\n• State machine + review logic + manual hooks\n• Duplicated file I/O from prompts.ts\n• Verdict parsing regexes\n• Patch-id lifecycle steps\n• reviewMode flag checked 12 times\n• ModeHooks with 7 callback fields",
+    afterState: "cycle.ts (~400 lines)\n• Pure state machine\n• Accepts ModeConfig from any mode\n• No mode-specific code\n• No file I/O, no prompts\n• Verdict parsing stays (cycle protocol)\n• No flags — modes set navigate/passSummary"
+  },
+  "chg-prompts-dies": {
+    title: "prompts.ts → split into modes", sub: "501 → 0 lines",
+    category: "Structural Change",
+    description: "prompts.ts is split: review prompts → review-fresh.ts + review-incremental.ts, exec prompts → exec.ts, manual prompts → manual.ts. Each mode owns its prompts. The promptSets registry disappears.",
+    changeStatus: "removed",
+    beforeState: "prompts.ts (501 lines)\n• Review prompts (full + incremental)\n• Exec prompts (orchestrator + workhorse)\n• Manual prompts (verify + fix)\n• File I/O + context expansion\n• sanitize, CHANGES_STRIP_RE\n• All three modes mixed together",
+    afterState: "Gone. Each mode module owns its prompts:\n• review-fresh.ts: full review prompt\n• review-incremental.ts: re-review prompt + file I/O\n• exec.ts: orchestrator/workhorse prompts\n• manual.ts: verify/fix prompts\nChange a mode's prompt → touch only that mode"
+  },
+  "chg-fresh-incr": {
+    title: "reviewMode flag → separate modules", sub: "15 checks → 0 checks",
+    category: "Structural Change",
+    description: "The reviewMode string flag was checked 12 times in engine.ts and 3 times in prompts.ts. Fresh and incremental are now separate modules that tell the cycle what to do via ModeConfig.",
+    changeStatus: "new",
+    beforeState: "engine.ts:\n  if (reviewMode === 'fresh') navigateToAnchor\n  if (mode === 'review' && reviewMode === 'incremental')\n    snapshotContextHashes()\n    extractTaggedSHAs()\n    ...\nprompts.ts:\n  if (round > 1 && reviewMode === 'incremental')\n    return reviewIncrementalPrompt()\n→ 15 flag checks across 2 files",
+    afterState: "review-fresh.ts provides ModeConfig:\n  navigate: 'anchor'\n  (no beforeWorkhorse/afterWorkhorse)\nreview-incremental.ts provides ModeConfig:\n  navigate: 'leaf', passSummary: true\n  beforeWorkhorse: snapshot\n  afterWorkhorse: compare\n→ 0 flag checks. Each strategy IS the code."
+  },
+  "chg-modehooks": {
+    title: "ModeHooks → ModeConfig", sub: "7 callbacks → declarative config",
+    category: "Structural Change",
+    description: "The ModeHooks callback pattern had engine checking manual-specific booleans (suppressLogs, suppressRoundIncrement). Replaced by ModeConfig: each mode provides its behavior declaratively. Cycle dispatches without conditionals.",
+    changeStatus: "changed",
+    beforeState: "engine.ts ModeHooks interface:\n  onApproved?, onChangesRequested?, onStop?\n  getAnchorExtras?, getPromptExtras?\n  suppressRoundIncrement?, suppressLogs?\nengine.ts checks:\n  if (modeHooks.suppressLogs) ...\n  if (!modeHooks.suppressRoundIncrement) ...\n→ manual behavior encoded as flags in engine",
+    afterState: "cycle.ts ModeConfig:\n  onApproved(), buildOverseerPrompt()\n  navigate, passSummary, logRounds\n  beforeWorkhorse?, afterWorkhorse?\nEach mode provides its config.\nCycle dispatches: config.onApproved(ctx)\n→ no conditionals, no flags"
+  }
+};
+
+const SCENES = {
+  // ── Tab 1: Original ────────────────────────────────────────
+  "orig-overview": {
+    tab: "original", label: "Hub & Spoke", width: 1100, height: 720,
+    nodes: [
+      { id: "orig-index", x: 400, y: 10 },
+      { id: "orig-types", x: 10, y: 10 },
+      { id: "orig-config", x: 10, y: 140 },
+      { id: "orig-context", x: 10, y: 270 },
+      { id: "orig-session", x: 10, y: 400 },
+      { id: "orig-verdicts", x: 10, y: 530 },
+      { id: "orig-prompts", x: 400, y: 170 },
+      { id: "orig-prompts-review", x: 400, y: 300 },
+      { id: "orig-prompts-exec", x: 400, y: 430 },
+      { id: "orig-prompts-manual", x: 400, y: 560 },
+      { id: "orig-reconstruct", x: 800, y: 10 },
+      { id: "orig-logview", x: 800, y: 140 },
+      { id: "orig-fixup", x: 800, y: 270 },
+      { id: "orig-git", x: 800, y: 400 },
+      { id: "orig-diffreview", x: 800, y: 530 },
+      { id: "orig-tui", x: 800, y: 660 }
+    ],
+    edges: [
+      { from: "orig-index", to: "orig-types", label: "imports", desc: "Types for state, config, prompts" },
+      { from: "orig-index", to: "orig-config", label: "imports", desc: "loadConfig, saveConfigField" },
+      { from: "orig-index", to: "orig-context", label: "imports", desc: "parseArgs, snapshotContextHashes" },
+      { from: "orig-index", to: "orig-session", label: "imports", desc: "sanitize, modelToStr, findModel" },
+      { from: "orig-index", to: "orig-verdicts", label: "imports", desc: "matchVerdict, hasFixesComplete" },
+      { from: "orig-index", to: "orig-prompts", label: "imports", desc: "promptSets" },
+      { from: "orig-index", to: "orig-reconstruct", label: "imports", desc: "reconstructState" },
+      { from: "orig-index", to: "orig-logview", label: "imports", desc: "showLog" },
+      { from: "orig-index", to: "orig-fixup", label: "imports", desc: "extractTaggedSHAs, snapshotPatchIds" },
+      { from: "orig-index", to: "orig-git", label: "imports", desc: "resolveRange, getCommitList, checkGitState" },
+      { from: "orig-index", to: "orig-diffreview", label: "imports", desc: "reviewCommitInEditor" },
+      { from: "orig-prompts", to: "orig-prompts-review", label: "delegates", desc: "Review prompts" },
+      { from: "orig-prompts", to: "orig-prompts-exec", label: "delegates", desc: "Exec prompts" },
+      { from: "orig-prompts", to: "orig-prompts-manual", label: "delegates", desc: "Manual prompts" },
+      { from: "orig-logview", to: "orig-tui", label: "imports", desc: "loadPiAgent, loadTui" }
+    ],
+    notes: "16 files. index.ts (1,040 lines) imports from 10 of 12 modules. Every change touches the hub."
+  },
+
+  // ── Tab 2: Current ─────────────────────────────────────────
+  "cur-overview": {
+    tab: "current", label: "Dependencies", width: 1100, height: 530,
+    nodes: [
+      { id: "cur-index", x: 400, y: 10 },
+      { id: "cur-engine", x: 400, y: 160 },
+      { id: "cur-prompts", x: 10, y: 160 },
+      { id: "cur-git", x: 10, y: 350 },
+      { id: "cur-manual", x: 10, y: 500 },
+      { id: "cur-logview", x: 800, y: 10 },
+      { id: "cur-config", x: 800, y: 160 },
+      { id: "cur-diffreview", x: 800, y: 350 },
+      { id: "cur-verdicts", x: 800, y: 500 }
+    ],
+    edges: [
+      { from: "cur-index", to: "cur-engine", label: "delegates", desc: "All commands delegate to engine" },
+      { from: "cur-index", to: "cur-logview", label: "showLog", desc: "Log viewer command" },
+      { from: "cur-index", to: "cur-config", label: "config UI", desc: "Settings picker" },
+      { from: "cur-engine", to: "cur-prompts", label: "build prompts", desc: "promptSets[mode].buildOverseerPrompt/buildWorkhorsePrompt" },
+      { from: "cur-engine", to: "cur-git", label: "⚠ step-by-step", desc: "Engine orchestrates patch-id lifecycle: extractTaggedSHAs → findSnapshotBase → snapshotPatchIds → resolveSubjects → detectUnchanged" },
+      { from: "cur-engine", to: "cur-manual", label: "⚠ ModeHooks", desc: "Engine creates manual mode, manual populates 7 callback hooks. Engine checks suppressLogs/suppressRoundIncrement." },
+      { from: "cur-engine", to: "cur-verdicts", label: "⚠ owns parsing", desc: "Engine has its own verdict regexes + matchVerdict, hasFixesComplete, stripVerdict" },
+      { from: "cur-engine", to: "cur-config", label: "loadConfig", desc: "Reads settings" },
+      { from: "cur-manual", to: "cur-git", label: "git ops", desc: "checkGitState, fixGitState, resolveRange" },
+      { from: "cur-manual", to: "cur-diffreview", label: "review", desc: "reviewCommitInEditor" },
+      { from: "cur-prompts", to: "cur-verdicts", label: "constants", desc: "V_APPROVED, V_CHANGES, V_FIXES_COMPLETE" }
+    ],
+    notes: "engine.ts (868 lines) = cycle + review logic + manual hooks + duplicated file I/O + verdict parsing. Four features in one module."
+  },
+  "cur-leaks": {
+    tab: "current", label: "Information Leaks", width: 1100, height: 400,
+    nodes: [
+      { id: "cur-engine", x: 400, y: 10, status: "changed" },
+      { id: "cur-prompts", x: 10, y: 10, status: "changed" },
+      { id: "cur-git", x: 10, y: 230, status: "changed" },
+      { id: "cur-manual", x: 800, y: 10, status: "changed" },
+      { id: "cur-verdicts", x: 800, y: 230, status: "changed" }
+    ],
+    edges: [
+      { from: "cur-engine", to: "cur-prompts", label: "⚠ DUPLICATE", desc: "readFileContent, readDirContent, safeDirEntries, expandTilde, sanitize — identical code in BOTH modules." },
+      { from: "cur-engine", to: "cur-verdicts", label: "⚠ SPLIT", desc: "Verdict protocol in 3 places: constants in verdicts.ts, parsing regexes in engine.ts, CHANGES_STRIP_RE in prompts.ts." },
+      { from: "cur-engine", to: "cur-git", label: "⚠ KNOWS HOW", desc: "Engine calls extractTaggedSHAs → findSnapshotBase → snapshotPatchIds → resolveSubjects → detectUnchanged step by step." },
+      { from: "cur-engine", to: "cur-manual", label: "⚠ FLAGS", desc: "ModeHooks: suppressLogs, suppressRoundIncrement. Engine checks manual-specific booleans." }
+    ],
+    notes: "4 design decisions leaked across module boundaries. Each leak = change amplification."
+  },
+
+  // ── Tab 3: Target ──────────────────────────────────────────
+  "tgt-overview": {
+    tab: "target", label: "Architecture", width: 1300, height: 750,
+    nodes: [
+      { id: "tgt-index", x: 480, y: 10 },
+      { id: "tgt-cycle", x: 480, y: 160 },
+      { id: "tgt-session", x: 480, y: 330 },
+      { id: "tgt-status", x: 480, y: 500 },
+      { id: "tgt-verdict", x: 480, y: 640 },
+      { id: "tgt-fresh", x: 10, y: 10 },
+      { id: "tgt-incremental", x: 10, y: 200 },
+      { id: "tgt-exec", x: 10, y: 420 },
+      { id: "tgt-manual", x: 10, y: 590 },
+      { id: "tgt-git", x: 960, y: 10 },
+      { id: "tgt-logview", x: 960, y: 180 },
+      { id: "tgt-config", x: 960, y: 350 },
+      { id: "tgt-diffreview", x: 960, y: 520 }
+    ],
+    edges: [
+      { from: "tgt-index", to: "tgt-cycle", label: "creates", desc: "Creates session, status, cycle. Passes cycle to each mode." },
+      { from: "tgt-index", to: "tgt-fresh", label: "/loop (fresh)", desc: "When reviewMode='fresh', delegates to fresh review" },
+      { from: "tgt-index", to: "tgt-incremental", label: "/loop (incr)", desc: "When reviewMode='incremental', delegates to incremental review" },
+      { from: "tgt-index", to: "tgt-exec", label: "/loop:exec", desc: "Delegates to exec mode" },
+      { from: "tgt-index", to: "tgt-manual", label: "/loop:manual", desc: "Delegates to manual mode" },
+      { from: "tgt-index", to: "tgt-logview", label: "/loop:log", desc: "Log viewer command" },
+      { from: "tgt-index", to: "tgt-config", label: "/loop:cfg", desc: "Settings picker" },
+      { from: "tgt-cycle", to: "tgt-session", label: "composes", desc: "Cycle uses session for setAgent before each turn. Passes SessionHandle to modes via CycleHandle." },
+      { from: "tgt-cycle", to: "tgt-status", label: "composes", desc: "Cycle uses status for basic elapsed tracking. Passes StatusHandle to modes via CycleHandle." },
+      { from: "tgt-cycle", to: "tgt-verdict", label: "parses", desc: "Cycle calls matchVerdict() and hasFixesComplete() to detect transitions. Doesn't know the regexes." },
+      { from: "tgt-fresh", to: "tgt-cycle", label: "pure config", desc: "Provides prompts + empty callbacks. Cycle defaults ARE fresh behavior (anchor nav, logging, round increment)." },
+      { from: "tgt-incremental", to: "tgt-cycle", label: "pure config", desc: "Provides prompts + beforeWorkhorse (snapshot) + afterWorkhorse (compare → returns unchanged commits). No infra calls — just data in, data out." },
+      { from: "tgt-exec", to: "tgt-cycle", label: "pure config", desc: "Provides orchestrator prompts + <task> extraction in buildWorkhorsePrompt." },
+      { from: "tgt-manual", to: "tgt-cycle", label: "wraps cycle", desc: "Manual has its own lifecycle (commit picking, editor review) that wraps the cycle for the inner fix loop." },
+      { from: "tgt-incremental", to: "tgt-git", label: "opaque snapshot", desc: "snapshotBeforeWorkhorse() → PatchSnapshot, detectUnchangedAfterWorkhorse()" },
+      { from: "tgt-manual", to: "tgt-git", label: "git ops", desc: "checkGitState, fixGitState, resolveRange" },
+      { from: "tgt-manual", to: "tgt-diffreview", label: "editor review", desc: "reviewCommitInEditor" },
+      { from: "tgt-cycle", to: "tgt-config", label: "loadConfig", desc: "Reads model names, thinking levels" }
+    ],
+    notes: "Center column: infrastructure (cycle + session + status + verdict). Left: features that compose them. Right: support modules. Each module has one job."
+  },
+  "tgt-isolation": {
+    tab: "target", label: "Change Isolation", width: 1200, height: 680,
+    nodes: [
+      { id: "tgt-cycle", x: 440, y: 10, status: "unchanged" },
+      { id: "tgt-session", x: 440, y: 190, status: "unchanged" },
+      { id: "tgt-status", x: 440, y: 370, status: "unchanged" },
+      { id: "tgt-verdict", x: 440, y: 520, status: "unchanged" },
+      { id: "tgt-fresh", x: 10, y: 10, status: "unchanged" },
+      { id: "tgt-incremental", x: 10, y: 190, status: "unchanged" },
+      { id: "tgt-exec", x: 10, y: 370, status: "unchanged" },
+      { id: "tgt-manual", x: 10, y: 520, status: "unchanged" },
+      { id: "tgt-git", x: 880, y: 10, status: "unchanged" },
+      { id: "tgt-logview", x: 880, y: 190, status: "unchanged" },
+      { id: "tgt-config", x: 880, y: 370, status: "unchanged" }
+    ],
+    edges: [
+      { from: "tgt-fresh", to: "tgt-fresh", label: "✓ fresh prompt", desc: "Change fresh review prompt wording → only review-fresh.ts" },
+      { from: "tgt-incremental", to: "tgt-incremental", label: "✓ incr prompt", desc: "Change incremental re-review prompt → only review-incremental.ts" },
+      { from: "tgt-incremental", to: "tgt-incremental", label: "✓ file tracking", desc: "Change MAX_FILE_SIZE for @path context → only review-incremental.ts" },
+      { from: "tgt-exec", to: "tgt-exec", label: "✓ exec behavior", desc: "Change exec to support multi-step tasks → only exec.ts" },
+      { from: "tgt-manual", to: "tgt-manual", label: "✓ manual UX", desc: "Add 'skip commit' to manual review → only manual.ts" },
+      { from: "tgt-cycle", to: "tgt-cycle", label: "✓ turn flow", desc: "Add a 'paused' phase → only cycle.ts" },
+      { from: "tgt-session", to: "tgt-session", label: "✓ pi API", desc: "Change pi's session tree API → only session.ts" },
+      { from: "tgt-session", to: "tgt-session", label: "✓ model switch", desc: "Change how models are switched → only session.ts" },
+      { from: "tgt-status", to: "tgt-status", label: "✓ timing display", desc: "Change status bar format → only status.ts" },
+      { from: "tgt-verdict", to: "tgt-verdict", label: "✓ verdict format", desc: "Accept VERDICT: ✓ APPROVED → only verdict.ts" },
+      { from: "tgt-git", to: "tgt-git", label: "✓ fingerprinting", desc: "Switch from patch-id to tree-hash → only git.ts" },
+      { from: "tgt-logview", to: "tgt-logview", label: "✓ TUI layout", desc: "Change log viewer layout → only log-view.ts" },
+      { from: "tgt-config", to: "tgt-config", label: "✓ settings", desc: "Add a new config field → only config.ts" }
+    ],
+    notes: "13 change scenarios. Each touches exactly one module. Left: features. Center: infrastructure. Right: support."
+  },
+  "tgt-modeconfig": {
+    tab: "target", label: "Wiring Model", width: 1300, height: 550,
+    nodes: [
+      { id: "tgt-index", x: 480, y: 10 },
+      { id: "tgt-cycle", x: 200, y: 200 },
+      { id: "tgt-session", x: 480, y: 200 },
+      { id: "tgt-status", x: 760, y: 200 },
+      { id: "tgt-fresh", x: 10, y: 400 },
+      { id: "tgt-incremental", x: 330, y: 400 },
+      { id: "tgt-exec", x: 650, y: 400 },
+      { id: "tgt-manual", x: 970, y: 400 }
+    ],
+    edges: [
+      { from: "tgt-index", to: "tgt-cycle", label: "creates", desc: "index creates the cycle with session + status injected" },
+      { from: "tgt-index", to: "tgt-session", label: "creates", desc: "index creates session from pi API" },
+      { from: "tgt-index", to: "tgt-status", label: "creates", desc: "index creates status tracker" },
+      { from: "tgt-index", to: "tgt-fresh", label: "plugs in", desc: "cycle.start(freshConfig, args, ctx) — index picks fresh when config says 'fresh'" },
+      { from: "tgt-index", to: "tgt-incremental", label: "plugs in", desc: "cycle.start(incrementalConfig, args, ctx) — index picks incremental when config says 'incremental'" },
+      { from: "tgt-index", to: "tgt-exec", label: "plugs in", desc: "cycle.start(execConfig, args, ctx)" },
+      { from: "tgt-index", to: "tgt-manual", label: "plugs in", desc: "manual.start(args, ctx) — manual has its own lifecycle around the cycle" },
+      { from: "tgt-cycle", to: "tgt-session", label: "uses", desc: "Cycle calls session for navigation, model switching, editor blocking. Modes never touch session." },
+      { from: "tgt-cycle", to: "tgt-status", label: "uses", desc: "Cycle calls status for timing updates. Modes never touch status." }
+    ],
+    notes: "Index.ts is the orchestrator. It creates infrastructure (cycle, session, status) and plugs modes into the cycle at runtime. Modes are pure config — they never call infrastructure directly. No cross-talk between modules."
+  },
+
+  // ── Tab 4: Changes ─────────────────────────────────────────
+  "changes-structural": {
+    tab: "changes", label: "What Changes", width: 1100, height: 500,
+    nodes: [
+      { id: "chg-engine-dies", x: 10, y: 10, status: "changed" },
+      { id: "chg-prompts-dies", x: 560, y: 10, status: "removed" },
+      { id: "chg-fresh-incr", x: 10, y: 260, status: "new" },
+      { id: "chg-modehooks", x: 560, y: 260, status: "changed" }
+    ],
+    edges: [
+      { from: "chg-engine-dies", to: "chg-fresh-incr", label: "enables", desc: "Stripping mode-specific code from engine enables modes to be standalone modules" },
+      { from: "chg-prompts-dies", to: "chg-fresh-incr", label: "feeds", desc: "Review prompts move from prompts.ts into review-fresh.ts and review-incremental.ts" },
+      { from: "chg-engine-dies", to: "chg-modehooks", label: "replaces", desc: "ModeHooks replaced by ModeConfig: declarative instead of callback-based" }
+    ],
+    notes: "engine.ts (868 lines) → cycle.ts (~400 lines). prompts.ts (501 lines) → split into mode modules. reviewMode flag → separate modules. ModeHooks → ModeConfig."
+  }
+};
+
+createArchitectureViewer({
+  title: "Loop Extension — Deep Modules Evolution",
+  tabs: [
+    { id: "original", label: "① Original" },
+    { id: "current", label: "② Current" },
+    { id: "target", label: "③ Target" },
+    { id: "changes", label: "④ Changes" }
+  ],
+  nodes: NODE_DATA,
+  scenes: SCENES,
+  links: {
+    files: [{ baseUrl: "https://github.com/inancgumus/pi-loop/blob/main/" }],
+    issues: []
+  },
+  theme: "tokyo-night"
+});
+
+</script>
+</body>
+</html>

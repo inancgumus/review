@@ -477,127 +477,348 @@ At this point, the following files should be gone:
 
 Run `npx tsx --test tests/*.test.ts` — all remaining tests pass.
 
-Run `grep -r "from \"\.\.\/" tests/` and verify that no test file imports from anything other than `../index.ts` and `../verdicts.ts` (exception: `../tui-runtime.ts` in `log-view.test.ts` for TUI loading — this is acceptable until Phase 2 absorbs it into log-view).
+Run `grep -r "from \"\.\.\/" tests/` and verify that no test file imports from anything other than `../index.ts` and `../verdicts.ts` .
+
+`log-view.test.ts` currently imports `loadPiAgent` from `../log-view.ts` and `showLog` via dynamic import. This couples tests to log-view internals. Convert these to go through the harness via `/loop:log`, or at minimum expose what's needed through index.ts.
+
+**Gate:** `grep -r "from \"\.\.\/" tests/ | grep -v index.ts | grep -v verdicts.ts` must return NOTHING.
 
 **STOP HERE.** Phase 1 is complete. Do not proceed to Phase 2 in the same session. Phase 2 is a separate `/loop:exec` run.
 
 ---
 
-## Phase 2: Refactor into deep modules
 
-**Prerequisite:** Phase 1 is complete. All tests are integration tests. No test imports internal modules.
+## Phase 2: Each mode owns its loop, top to bottom
 
-### Step 7: Merge git modules into `git.ts`
+**Prerequisite:** Phase 1 is complete. All tests are integration tests.
 
-Rename `git-manual.ts` → `git.ts`. Move all exports from `fixup-audit.ts` into `git.ts`. Delete `fixup-audit.ts`. Update all imports in `index.ts` and other files.
+### The architecture
 
-This is a safe structural change — no behavior changes. Tests pass because they don't import these files.
+Each mode is a straight-line `while` loop. No event routing. No callbacks. No state machine phases. The mode calls session, session sends a prompt, awaits the response, returns it. The mode reads the response and decides what to do next. Top to bottom.
 
-**Acceptance criteria:**
-- `git-manual.ts` and `fixup-audit.ts` no longer exist
-- `git.ts` exists with all their exports
-- All imports updated
-- Tests pass
+```
+/loop ──→ review-fresh / review-incremental
+/loop:exec ──→ exec
+/loop:manual ──→ manual
 
-### Step 8: Consolidate prompts into single file
+Each mode calls:
+  session.setModel(modelStr, thinking, ctx) → Promise<boolean>
+  session.send(prompt) → Promise<{ text: string }>
+  session.navigateToAnchor(ctx)
+  session.navigateToEntry(id, ctx)
+  ...etc
 
-Move `prompts-review.ts`, `prompts-exec.ts`, `prompts-manual.ts` content into `prompts.ts`. Delete the three files. Move `expandContextPaths` and related functions from `context.ts` into `prompts.ts` (they're only used by prompt building). Keep `parseArgs` in `context.ts` (used by `index.ts` command handler).
+Session wraps pi's async event model in a synchronous-looking API.
+Modes never see agent_end events. They just await.
+```
 
-If `context.ts` becomes trivial after this (just `parseArgs`), absorb it into `index.ts`.
+### What a mode looks like
 
-**Acceptance criteria:**
-- `prompts-review.ts`, `prompts-exec.ts`, `prompts-manual.ts` no longer exist
-- `prompts.ts` has all prompt logic
-- `context.ts` only has `parseArgs` (or is absorbed)
-- Tests pass
-
-### Step 9: Absorb `tui-runtime.ts` into `log-view.ts`
-
-Move the 48 lines of `tui-runtime.ts` into `log-view.ts`. Delete `tui-runtime.ts`. Update the one import in `log-view.test.ts` if it still imports `tui-runtime.ts` directly.
-
-**Acceptance criteria:**
-- `tui-runtime.ts` no longer exists
-- `log-view.ts` handles its own runtime loading
-- Tests pass
-
-### Step 10: Extract `engine.ts` from `index.ts`
-
-This is the biggest step. Extract the loop state machine into `engine.ts`.
-
-**What moves to `engine.ts`:**
-- State management: `LoopState`, `newState`, all state transitions
-- Overseer/workhorse flow: `startOverseer`, `startWorkhorse`, `onWorkhorseDone`, `continueLoop`
-- Agent end handling: `handleOverseerEnd`, `handleWorkhorseEnd`
-- Model switching: `setAgent`
-- Anchor management: `findAnchor`, `rememberAnchor`, `navigateToEntry`, `navigateToAnchor`
-- Timer/status: `formatDuration`, `formatTime`, `updateStatus`, `startStatusTimer`, `stopStatusTimer`
-- Editor env blocking: `blockInteractiveEditors`, `restoreEditorEnv`, `EDITOR_VARS`, `savedEnv`
-- Round tracking: `recordOverseer`, `recordWorkhorse`
-- Stop logic: `stopLoop`
-- Absorb `session.ts` (sanitize, modelToStr, findModel, getLastAssistant — these are engine internals)
-- Absorb `reconstruct.ts` (session recovery is engine-internal)
-- Absorb `verdicts.ts` (verdict parsing is engine-internal protocol)
-
-**BUT: keep exporting `V_APPROVED`, `V_CHANGES`, `V_FIXES_COMPLETE` from `verdicts.ts`** as re-exports from `engine.ts`, OR keep `verdicts.ts` as a thin re-export file since tests import it. Simplest: keep `verdicts.ts` as-is but have engine.ts import from it internally. The tests need `verdicts.ts` for the protocol constants.
-
-Actually — keep `verdicts.ts` alive. It defines the protocol between overseer and workhorse. Tests need those constants. It's a shared contract, not an implementation detail.
-
-**engine.ts interface:**
 ```typescript
-interface Engine {
-  start(mode: LoopMode, args: string, ctx: any): Promise<void>;
-  stop(ctx: any): Promise<void>;
-  resume(ctx: any): Promise<void>;
-  onAgentEnd(event: any, ctx: any): void;
-  state: LoopState;  // readonly access for commands
-  log(text: string): void;
-  startManualInnerLoop(feedback: string, ctx: any): Promise<void>;
-  showCommitForReview(ctx: any): Promise<void>;
+// review-fresh.ts — the entire loop
+async function loop(session, ctx) {
+  const cfg = loadConfig(ctx.cwd);
+  const { focus, contextPaths } = context.parseArgs(args, ctx.cwd);
+  session.rememberAnchor(ctx);
+  session.blockEditors();
+  status.start();
+
+  try {
+    let round = 1;
+    while (round <= cfg.maxRounds) {
+      // Overseer turn — mode picks model, builds prompt, reads response
+      await session.navigateToAnchor(ctx);
+      await session.setModel(cfg.overseerModel, cfg.overseerThinking, ctx);
+      const { text: review } = await session.send(buildOverseerPrompt(focus, round, contextPaths));
+      const v = verdict.matchVerdict(review);
+      if (v === "approved") { ctx.ui.notify("✅ Approved"); break; }
+      if (v !== "changes_requested") {
+        await session.send("Continue. End with " + V_APPROVED + " or " + V_CHANGES);
+        continue;
+      }
+
+      // Workhorse turn — mode picks different model, different prompt
+      await session.navigateToAnchor(ctx);
+      await session.setModel(cfg.workhorseModel, cfg.workhorseThinking, ctx);
+      let { text: fix } = await session.send(buildWorkhorsePrompt(review, round));
+      while (!verdict.hasFixesComplete(fix)) {
+        ({ text: fix } = await session.send("Continue. End with " + V_FIXES_COMPLETE));
+      }
+
+      ctx.ui.setStatus("loop", `Round ${round} · ${status.formatDuration(status.elapsed())}`);
+      round++;
+    }
+  } catch (e) {
+    if (e instanceof StopError) { /* /loop:stop called */ }
+    else throw e;
+  }
+
+  status.stop();
+  session.restoreEditors();
 }
-export function createEngine(pi: ExtensionAPI, config: () => Config): Engine;
 ```
 
-**What stays in `index.ts`:**
-- Command registration (`/loop`, `/loop:exec`, `/loop:manual`, `/loop:stop`, `/loop:resume`, `/loop:rounds`, `/loop:log`, `/loop:cfg`, `/loop:debug`)
-- Config UI (`pickModel`, `editMaxRounds`, `pickThinking`, `pickReviewMode`)
-- Manual mode entry point (parsing args, calling engine)
-- Wiring engine to pi events
+No callbacks. No event dispatch. No state machine. Just a `while` loop with `await`. The mode decides everything: when to navigate, what prompt to send, how to interpret the response, when to stop.
 
-Target: `index.ts` ≤ 200 lines.
+### How session wraps pi's async events
 
-**Acceptance criteria:**
-- `engine.ts` exists with the state machine
-- `session.ts` and `reconstruct.ts` no longer exist (absorbed)
-- `index.ts` is a thin command router
-- Tests pass
+Pi is event-driven (`agent_end` fires when the model finishes). Session wraps this in a promise:
 
-### Step 11: Final cleanup
+```typescript
+// session.ts internals
+let pendingResolve: ((text: string) => void) | null = null;
 
-- Verify `index.ts` ≤ 200 lines
-- Verify no circular imports
-- Verify every module's public exports fit in ~5 items or fewer
-- Run `npx tsx --test tests/*.test.ts` — all pass
-- Run a manual e2e test with `/loop check auth` on a real repo to verify runtime behavior
+pi.on("agent_end", (_event, ctx) => {
+  if (!pendingResolve) return;
+  const { text, stopReason } = getLastAssistant(ctx);
+  if (stopReason === "abort" || stopReason === "cancelled") return;
+  const resolve = pendingResolve;
+  pendingResolve = null;
+  resolve(text);
+});
 
-**Final file structure:**
+async function setModel(modelStr: string, thinking: string, ctx: any): Promise<boolean> {
+  const model = findModel(modelStr, ctx);
+  if (!model) return false;
+  if (!await pi.setModel(model)) return false;
+  pi.setThinkingLevel(thinking as any);
+  return true;
+}
+
+async function send(prompt: string): Promise<{ text: string }> {
+  return new Promise((resolve, reject) => {
+    pendingResolve = resolve;
+    pendingReject = reject;
+    pi.sendUserMessage(prompt);
+  });
+}
+
+function stop(): void {
+  if (pendingReject) {
+    pendingReject(new StopError());
+    pendingResolve = null;
+    pendingReject = null;
+  }
+}
 ```
-index.ts       (~150-200 lines) — Command router. Registers commands, wires engine to pi.
-engine.ts      (~500-600 lines) — Loop state machine. Transitions, timing, model switching.
-git.ts         (~320 lines)     — All git operations. Range, commits, patch-ids, state recovery.
-prompts.ts     (~450 lines)     — All prompt building. Review, exec, manual. Context expansion.
-log-view.ts    (~600 lines)     — TUI log viewer with search. Includes runtime loading.
-config.ts      (~64 lines)      — Settings persistence.
-types.ts       (~118 lines)     — Shared types.
-verdicts.ts    (~31 lines)      — Protocol constants (kept for test imports).
-diff-review.ts (~159 lines)     — Editor-based diff annotation (used by manual mode in engine).
+
+Session hides pi's event model. Modes see: "send prompt, get response." That's it.
+
+### Module hierarchy
+
+```
+Modes (own the loop, decide everything)
+  review-fresh        — while loop: overseer → workhorse → repeat
+  review-incremental  — while loop: overseer → workhorse → repeat (+ patch-id audit, context tracking)
+  exec                — while loop: orchestrator → workhorse → repeat (+ task extraction)
+  manual              — commit loop: user reviews → workhorse fixes → overseer verifies
+
+Infrastructure (toolkit, called by modes)
+  session             — setModel, send, navigate, anchor, blockEditors
+  verdict             — matchVerdict, hasFixesComplete, stripVerdict, sanitize, constants
+  context             — parseArgs, readPaths (raw), snapshotContextHashes
+  status              — start, stop, update, pause, resume, formatDuration
+  git                 — resolveRange, checkGitState, snapshotBeforeWorkhorse
+  config              — loadConfig, saveConfigField
+  diff-review         — reviewCommitInEditor (used by manual)
+  review-workhorse    — shared fix prompt (used by both review modes)
+
+Orchestrator
+  index               — creates session + status, creates modes, registers commands
 ```
 
-Shallow modules absorbed:
-- `session.ts` → `engine.ts`
-- `reconstruct.ts` → `engine.ts`
-- `tui-runtime.ts` → `log-view.ts`
-- `fixup-audit.ts` → `git.ts`
-- `prompts-review.ts` → `prompts.ts`
-- `prompts-exec.ts` → `prompts.ts`
-- `prompts-manual.ts` → `prompts.ts`
-- `context.ts` → `prompts.ts` (expandContextPaths) + `index.ts` or `engine.ts` (parseArgs)
+Dependencies flow downward only. No mode knows about another mode. Infrastructure doesn't know modes exist. Index creates everything and routes commands to the right mode.
+
+### session.ts interface
+
+```typescript
+export interface Session {
+  setModel(modelStr: string, thinking: string, ctx: any): Promise<boolean>;
+  send(prompt: string): Promise<{ text: string }>;
+  navigateToAnchor(ctx: any): Promise<boolean>;
+  navigateToEntry(id: string, ctx: any): Promise<boolean>;
+  findAnchor(ctx: any): { id: string; data: any } | null;
+  rememberAnchor(ctx: any, extras?: Record<string, any>): void;
+  getLeafId(ctx: any): string;
+  blockEditors(): void;
+  restoreEditors(): void;
+  log(text: string): void;
+  stop(): void;
+  getBranch(ctx: any): any[];
+}
+export function createSession(pi: ExtensionAPI): Session;
+```
+
+Session knows nothing about overseer/workhorse/orchestrator. It switches models and sends prompts. The MODE decides which model to use for each turn:
+
+```typescript
+// Mode controls everything:
+const cfg = loadConfig(ctx.cwd);
+await session.setModel(cfg.overseerModel, cfg.overseerThinking, ctx);
+const { text: review } = await session.send(overseerPrompt);
+
+await session.setModel(cfg.workhorseModel, cfg.workhorseThinking, ctx);
+const { text: fix } = await session.send(workhorsePrompt);
+```
+
+**~160 lines.** Session tree navigation, anchor management, editor blocking, async→promise bridging. Zero mode knowledge.
+
+### What this kills
+
+- **`agent_end` event routing** → gone. Session resolves a promise internally. Modes just `await`.
+- **`onAgentEnd` dispatch** → gone. No active mode tracking needed in index.ts.
+- **`deferIf` hacks** → gone. Straight-line async/await.
+- **State machine phases** (`idle`, `reviewing`, `fixing`) → gone. The mode's position in the `while` loop IS the phase.
+- **`handleOverseerEnd`/`handleWorkhorseEnd`** → gone. Mode reads response and decides inline.
+
+### Duplication audit
+
+| Piece | Owner | Who imports it |
+|---|---|---|
+| `matchVerdict`, `sanitize`, etc. | verdict.ts | all modes |
+| `expandContextPaths`, `parseArgs` | context.ts | review-fresh, review-incremental, exec |
+| `snapshotContextHashes` | context.ts | review-incremental |
+| `setModel`, `send`, `navigateToAnchor`, etc. | session.ts | all modes |
+| `formatDuration`, `totalElapsed` | status.ts | all modes |
+| Git operations | git.ts | review-incremental, manual |
+| `reviewCommitInEditor` | diff-review.ts | manual |
+| Review fix prompt | review-workhorse.ts | review-fresh, review-incremental |
+| Loop while-body (~40 lines) | each mode | nobody — each has its own |
+
+### Change isolation
+
+| Change | Touches only |
+|---|---|
+| Change fresh review prompt | `review-fresh.ts` |
+| Change incremental re-review prompt | `review-incremental.ts` |
+| Change review workhorse fix prompt | `review-workhorse.ts` |
+| Change @path file reading / MAX_FILE_SIZE | `context.ts` |
+| Change exec to support multi-step tasks | `exec.ts` |
+| Add "skip commit" to manual review | `manual.ts` |
+| Accept `VERDICT: ✓ APPROVED` format | `verdict.ts` |
+| Change session navigation logic | `session.ts` |
+| Change status bar format | the mode that owns that status text |
+| Switch patch-id to tree-hash | `git.ts` |
+| Change TUI log viewer | `log-view.ts` |
+| Add a new config field | `config.ts` |
+| Add a 4th mode | new `audit.ts` + `index.ts` |
+| Add a 3rd review strategy | new `review-X.ts` + `index.ts` |
+
+### Target file structure
+
+```
+index.ts              (~100 lines) — Orchestrator. Creates session + status, creates modes, registers commands.
+review-fresh.ts       (~220 lines) — Fresh review loop. Full re-review each round.
+review-incremental.ts (~320 lines) — Incremental review loop. Patch-id audit, context tracking.
+review-workhorse.ts   (~50 lines)  — Shared review fix prompt.
+exec.ts               (~220 lines) — Exec loop. Step-by-step plan execution.
+manual.ts             (~350 lines) — Manual review loop. Editor, plannotator, commit flow.
+session.ts            (~160 lines) — Pi session. setModel, send, navigate, anchors, editors. Zero mode knowledge.
+verdict.ts            (~30 lines)  — Wire protocol. Constants, parsing, sanitize.
+context.ts            (~80 lines)  — File I/O. @path parsing, raw reading, hashing. No formatting.
+status.ts             (~60 lines)  — Timer + formatDuration. Modes own their status text.
+git.ts                (~300 lines) — Git operations + opaque patch-id lifecycle.
+log-view.ts           (~600 lines) — TUI log viewer.
+config.ts             (~83 lines)  — Settings persistence.
+diff-review.ts        (~159 lines) — Editor-based annotation.
+types.ts              (~15 lines)  — Shared type aliases.
+demo.ts               (~52 lines)  — Debug data.
+```
+
+### Steps
+
+#### Step 7: Create session.ts
+
+The key step. Extract pi interaction from engine.ts AND add the promise-based `setModel` + `send` that wraps `agent_end` into `await`.
+
+1. Create `session.ts` with `createSession(pi)`.
+2. Move from engine.ts: navigateToAnchor, navigateToEntry, findAnchor, rememberAnchor, findModel, modelToStr, getLastAssistant, extractText, blockEditors, restoreEditors, log.
+3. Add `setModel(modelStr, thinking, ctx) → Promise<boolean>` and `send(prompt) → Promise<{ text: string }>` + `stop()` that rejects pending promise. Return an object, not a bare string — future metadata (tokens, latency) becomes additive with zero ripple.
+4. Register `agent_end` inside session.ts to resolve pending promises.
+5. Tests pass (engine.ts still works, imports from session.ts).
+
+#### Step 8: Create status.ts, verdict.ts, context.ts
+
+Extract from engine.ts and prompts.ts:
+- **status.ts**: timer only — start, stop, pause, resume, elapsed(), formatDuration, formatTime. No status bar text (modes set their own via `ctx.ui.setStatus`).
+- **verdict.ts**: matchVerdict, hasFixesComplete, stripVerdict, sanitize, constants, regexes. Merge CHANGES_STRIP_RE from prompts.ts.
+- **context.ts**: parseArgs, readPaths (returns `{path, content}[]` — raw, no markdown), snapshotContextHashes, findChangedContextPaths. Modes format the content for their prompts.
+
+Delete all duplicates from engine.ts. Tests pass.
+
+#### Step 9: Create review-fresh.ts
+
+1. Create `createFreshReview(session, status)`.
+2. Move full review overseer prompt from prompts.ts.
+3. Write the loop as a straight-line `while` with `await session.setModel` + `await session.send`.
+4. Imports: session.ts, verdict.ts, context.ts, status.ts, config.ts, review-workhorse.ts.
+5. Wire in index.ts. Tests pass for `/loop` in fresh mode.
+
+#### Step 10: Create review-workhorse.ts
+
+Extract from prompts.ts and engine.ts:
+- Shared review workhorse fix prompt (both review modes import it).
+- `reconstructState` from engine.ts — review-specific history parsing (rounds, verdicts, resume point). Session only provides raw `getBranch()`, this module interprets it.
+
+Both review modes import review-workhorse.ts for fix prompts and state reconstruction.
+
+#### Step 11: Create review-incremental.ts
+
+1. Create `createIncrementalReview(session, status)`.
+2. Move incremental prompt from prompts.ts.
+3. Write the loop (like fresh but with: leaf navigation, summary passing, patch-id snapshot/compare).
+4. Imports: session.ts, verdict.ts, context.ts, git.ts, status.ts, config.ts, review-workhorse.ts.
+5. Wire in index.ts. Tests pass for `/loop` in incremental mode.
+
+#### Step 12: Create exec.ts
+
+1. Create `createExecMode(session, status)`.
+2. Move exec prompts + extractTask from prompts.ts.
+3. Write the loop.
+4. Imports: session.ts, verdict.ts, context.ts, status.ts, config.ts.
+5. Wire in index.ts. Tests pass for `/loop:exec`.
+
+#### Step 13: Update manual.ts
+
+1. Move manual prompts from prompts.ts.
+2. Rewrite to use session.setModel/send instead of ModeHooks/ManualEngine.
+3. Manual owns its complete flow: commit picking → editor review → workhorse fix → overseer verify.
+4. Imports: session.ts, verdict.ts, git.ts, diff-review.ts, status.ts, config.ts.
+5. Tests pass for `/loop:manual`.
+
+#### Step 14: Delete engine.ts and prompts.ts
+
+All code moved. Delete both. Tests pass.
+
+#### Step 15: Slim index.ts
+
+```typescript
+export default function(pi) {
+  const session = createSession(pi);
+  const status = createStatus();
+
+  const fresh = createFreshReview(session, status);
+  const incremental = createIncrementalReview(session, status);
+  const exec = createExecMode(session, status);
+  const manual = createManualMode(session, status);
+
+  pi.registerCommand("loop", {
+    handler: (args, ctx) => {
+      const cfg = loadConfig(ctx.cwd);
+      return cfg.reviewMode === "incremental"
+        ? incremental.start(args, ctx)
+        : fresh.start(args, ctx);
+    }
+  });
+  pi.registerCommand("loop:exec", { handler: (args, ctx) => exec.start(args, ctx) });
+  pi.registerCommand("loop:manual", { handler: (args, ctx) => manual.start(args, ctx) });
+  pi.registerCommand("loop:stop", { handler: () => session.stop() });
+  // /loop:log, /loop:cfg, /loop:rounds ...
+}
+```
+
+No `agent_end` routing. No active mode tracking. ~100 lines.
+
+#### Step 16: Verify
+
+All tests green. Manual e2e test. Each change isolation scenario confirmed.

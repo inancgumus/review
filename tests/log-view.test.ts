@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import loopExtension from "../index.ts";
+import loopExtension, { showLog } from "../index.ts";
+import { loadPiAgent } from "./test-helpers.ts";
 import { V_FIXES_COMPLETE, V_APPROVED, V_CHANGES } from "../verdicts.ts";
-import { loadPiAgent } from "../log-view.ts";
 
 function wait(ms = 150): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -183,7 +183,6 @@ test("/loop:log opens a centered overlay viewer with explicit height", async () 
 });
 
 test("Tab switches focus between list and detail panels", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -226,7 +225,6 @@ test("Tab switches focus between list and detail panels", async () => {
 });
 
 test("j/k navigate entries in list panel, q closes", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -272,7 +270,6 @@ test("j/k navigate entries in list panel, q closes", async () => {
 });
 
 test("default selection is first entry (Request), not last", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -395,7 +392,6 @@ test("/loop:log shows Request entry before any rounds complete", async () => {
 });
 
 test("/ searches detail panel text and scrolls to matching line", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -450,7 +446,6 @@ test("/ searches detail panel text and scrolls to matching line", async () => {
 });
 
 test("search highlights with ANSI reverse video, Esc clears", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -492,7 +487,6 @@ test("search highlights with ANSI reverse video, Esc clears", async () => {
 });
 
 test("partial round shows overseer item without workhorse item", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -521,7 +515,6 @@ test("partial round shows overseer item without workhorse item", async () => {
 });
 
 test("current match uses distinct style from other matches", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -562,7 +555,6 @@ test("current match uses distinct style from other matches", async () => {
 });
 
 test("n/N visually moves highlight to the new match location", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -612,7 +604,6 @@ test("n/N visually moves highlight to the new match location", async () => {
 });
 
 test("highlight uses reset to avoid color bleed from code blocks", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -653,7 +644,6 @@ test("highlight uses reset to avoid color bleed from code blocks", async () => {
 });
 
 test("round timing shows duration in header and detail markdown", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -703,7 +693,6 @@ test("round timing shows duration in header and detail markdown", async () => {
 });
 
 test("log header shows total elapsed time when rounds have timing", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -748,7 +737,6 @@ test("log header shows total elapsed time when rounds have timing", async () => 
 });
 
 test("timing is hidden when startedAt/endedAt are zero", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -857,7 +845,6 @@ test("chat log overseer message includes started time", async () => {
 });
 
 test("log viewer Request entry shows Started time in detail", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -925,7 +912,6 @@ test("status timer stops after loop stops", async () => {
 });
 
 test("log viewer workhorse entry shows timing with stopwatch emoji", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -967,7 +953,6 @@ test("log viewer workhorse entry shows timing with stopwatch emoji", async () =>
 });
 
 test("log viewer overseer entry uses stopwatch emoji for timing", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
@@ -1004,7 +989,6 @@ test("log viewer overseer entry uses stopwatch emoji for timing", async () => {
 });
 
 test("overlay renders enough lines to fill maxHeight for proper centering", async () => {
-	const { showLog } = await import("../log-view.ts");
 	const { initTheme } = await loadPiAgent();
 	initTheme();
 
