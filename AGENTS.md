@@ -1,6 +1,6 @@
 pi extension. See README.md for user docs.
 
-Architecture: read docs/DEEP_MODULES_PLAN.md and ~/Desktop/goodarchitecture.md before touching anything.
+Architecture: read docs/DEEP_MODULES_PLAN.md and ~/.agents/docs/goodarchitecture.md before touching anything.
 
 Run tests: `npx tsx --test --test-timeout=15000 tests/*.test.ts`
 TDD only. Write a failing test first, see it fail, then fix. No exceptions.
@@ -24,4 +24,6 @@ Dependencies flow downward only: modes → infrastructure → nothing. Infrastru
 Infrastructure is generic — no mode-specific terms, formatting, or decisions. Treat every module as someone else's API you can't change.
 Timers: use trackInterval/untrackInterval from status.ts. killGhostTimers() in index.ts clears them on reload.
 Cancellation: session.stop() rejects pending promise with StopError. Modes catch it in try/catch and run cleanup.
-Cleanup: every mode has cleanup() that reads elapsed before stopping the timer. start() and resume() wrap setup in try/catch that calls cleanup on failure. state.phase="idle" is set after model restore completes.
+Cleanup: every mode has cleanup() that reads elapsed before stopping the timer. start() and resume() wrap setup in try/catch that calls cleanup on failure. state.running is set to false and session.unblockTools() is called after model restore completes.
+
+Tool blocking: session.ts exposes blockTools()/unblockTools() and registers a pi.on("tool_call") handler that blocks edit/write while the flag is set. Modes call blockTools() before an overseer turn and unblockTools() before a workhorse turn. index.ts never reaches into mode state for this — modes drive it directly.

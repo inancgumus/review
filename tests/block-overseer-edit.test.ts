@@ -86,7 +86,7 @@ test("edit and write are blocked during reviewing phase", async () => {
 	// Overseer is now reviewing. edit/write should be blocked.
 	const editResult = await h.callTool("edit");
 	assert.ok(editResult?.block, "edit should be blocked during review");
-	assert.ok(editResult.reason?.toLowerCase().includes("overseer"), "reason should mention overseer");
+	assert.ok(editResult.reason?.toLowerCase().includes("blocked"), "reason should mention tools are blocked");
 
 	const writeResult = await h.callTool("write");
 	assert.ok(writeResult?.block, "write should be blocked during review");

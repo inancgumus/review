@@ -23,7 +23,6 @@ export interface Mode {
 	resume(ctx: any, anchor: { id: string; data: any }): Promise<void>;
 	stop(ctx: any): Promise<void>;
 	isRunning(): boolean;
-	isOverseerTurn(): boolean;
 	getMaxRounds(): number;
 	setMaxRounds(n: number): void;
 	logSnapshot(): LogSnapshot | null;

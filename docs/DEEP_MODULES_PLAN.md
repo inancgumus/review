@@ -8,7 +8,7 @@ All tests must pass after every step. No exceptions.
 
 ## Architecture principles
 
-See AGENTS.md for dev workflow. Read ~/Desktop/goodarchitecture.md for the full rationale. Always manually test changes with pi — run /loop, /loop:exec, /loop:manual against a real repo.
+See AGENTS.md for dev workflow. Read ~/.agents/docs/goodarchitecture.md for the full rationale. Always manually test changes with pi — run /loop, /loop:exec, /loop:manual against a real repo.
 
 - Deep modules: change one module, nothing else changes.
 - Each mode owns its loop top-to-bottom as a while loop with await. No shared cycle. No ModeConfig.
@@ -21,11 +21,29 @@ See AGENTS.md for dev workflow. Read ~/Desktop/goodarchitecture.md for the full 
 - Integration tests only. Import index.ts and verdicts.ts, never internal modules.
 - send() returns { text: string } not bare string — future metadata is additive with zero ripple.
 
-## Current state
+## Resolved violations
 
-All 16 original steps are complete. engine.ts and prompts.ts are deleted. 123 tests pass.
+All 7 violations identified during design have been fixed:
 
-### File structure
+1. ~~context.ts returns markdown~~ → readContextPaths returns raw {path, content}[]. expandContextPaths removed. formatContextMarkdown is an opt-in helper callers invoke when they want the prompt block.
+2. ~~index.ts reaches into mode state~~ → modes expose isRunning(), getMaxRounds(), setMaxRounds(), logSnapshot(). isOverseerTurn() removed — tool blocking moved to session.ts.
+3. ~~session.ts EDITOR_BLOCK says "review loop"~~ → says "blocked during loop".
+4. ~~mode-specific terms in infrastructure comments~~ → rewritten to generic terms.
+5. ~~manual.ts uses pi.events for plannotator~~ → plannotator wiring lives in index.ts, the single boundary with other extensions. Modes don't touch pi.events.
+6. ~~index.ts re-exports loadPiAgent~~ → removed.
+7. ~~modes receive pi (ExtensionAPI) directly~~ → only index.ts and session.ts reference pi. All model switching, thinking-level changes, and message sending go through session.ts.
+
+## Done
+
+### Phase 1: Convert unit tests to integration tests ✅
+
+All 7 unit test files converted. log-view.test.ts imports from index.ts now. Gate passed: `grep -r "from \"\.\.\/" tests/ | grep -v index.ts | grep -v verdicts.ts` returns nothing.
+
+### Phase 2: Each mode owns its loop ✅
+
+All 16 steps complete. engine.ts and prompts.ts deleted. 123 tests pass.
+
+#### Current file structure
 
 ```
 index.ts              — Entry point. Creates session+status+modes, registers commands, routes input.
@@ -46,52 +64,9 @@ types.ts              — Shared type aliases.
 demo.ts               — Debug data for /loop:debug.
 ```
 
-### Bugs fixed (post-refactor)
+#### Bugs fixed (post-refactor)
 
 1. status.stop() before status.elapsed() → elapsed always 0. Fix: cleanup() reads elapsed before stop.
 2. stop() no-op when loopPromise is null (start crashed mid-setup). Fix: start/resume wrap setup in try/catch that calls cleanup. stop() never bails on phase===idle.
 3. Ghost timers from hot reload. Fix: status.ts tracks intervals in globalThis, killGhostTimers() in index.ts clears them on every load.
-
-## Remaining violations
-
-These diverge from the architecture principles. Each needs a failing test first, then a fix.
-
-### 1. context.ts returns markdown, not raw data
-
-expandContextPaths() returns `## Context files\n### path\n```content``` `. readContextPaths() exists and returns raw {path, content}[] but no caller uses it. All callers use expandContextPaths and get pre-formatted markdown.
-
-Principle violated: callers decide, helpers execute.
-
-Fix: callers switch from expandContextPaths to readContextPaths + their own formatting. Delete expandContextPaths or make it a convenience wrapper that callers opt into.
-
-### 2. index.ts reaches into mode state
-
-index.ts reads mode.state.phase, state.round, state.maxRounds, state.roundResults, state.loopStartedAt for:
-- activeMode() — finds running mode via `state.phase !== "idle"`
-- tool_call hook — blocks edit/write when `state.phase === "reviewing"`
-- /loop:rounds — reads/writes state.maxRounds
-- /loop:log — reads state.initialRequest, roundResults, loopStartedAt
-
-Principle violated: modules as third-party APIs (index.ts knows mode internals).
-
-Fix: modes expose narrow methods instead of raw state:
-- mode.isRunning(): boolean
-- mode.isOverseerTurn(): boolean  
-- mode.setMaxRounds(n): void
-- mode.logData(): { request, results, startedAt }
-
-### 3. Modes receive pi (ExtensionAPI) directly
-
-All 4 modes take `pi: ExtensionAPI` as first arg and call pi.setModel, pi.setThinkingLevel, pi.getThinkingLevel, pi.sendMessage directly — bypassing session.ts.
-
-Principle violated: session.ts is the only pi interaction layer.
-
-Fix: add missing methods to session.ts (getThinkingLevel, setThinkingLevel, sendCustomMessage). Modes stop importing pi. Only session.ts and index.ts touch pi directly.
-
-### 4. manual.ts uses pi.events for plannotator
-
-manual.ts uses pi.events.on("loop:set-review-fn") and pi.events.emit("plannotator:request") for cross-extension communication. This is event-driven architecture.
-
-Principle violated: no event-driven architecture.
-
-Fix: needs investigation. The plannotator is a separate extension that manual.ts coordinates with. Events might be the only option for cross-extension communication in pi. If so, document it as a boundary exception, not a pattern to follow internally.
+4. Phase state machine (`idle`|`reviewing`|`fixing`) in all modes violated "no event-driven architecture." Fix: replaced with `running: boolean`. Tool blocking moved from index.ts to session.ts via blockTools()/unblockTools(). Modes call these directly — no phase variable needed. isOverseerTurn() removed from Mode interface.

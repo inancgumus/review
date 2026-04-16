@@ -4,11 +4,11 @@ The deep-modules branch has bug fixes and features interleaved with structural r
 
 ## Overseer tool blocking
 
-The overseer prompt says "do not edit or write files" but nothing enforced it. Models ignored the instruction and called edit/write anyway. Now a `tool_call` handler blocks edit/write during the reviewing phase and returns a nudge to use read/bash only. Lives in index.ts as a `pi.on("tool_call")` handler that checks `engine.state.phase`.
+The overseer prompt says "do not edit or write files" but nothing enforced it. Models ignored the instruction and called edit/write anyway. Now a `tool_call` handler blocks edit/write whenever tools are blocked and returns a nudge to use read/bash only. Lives in session.ts as a `pi.on("tool_call")` handler. Modes toggle the flag via `session.blockTools()` before an overseer turn and `session.unblockTools()` before a workhorse turn.
 
 ## Exec mode plan leaking
 
-The workhorse saw the overseer's full response in exec mode. If the overseer mentioned future steps (which models do despite instructions), the workhorse implemented ahead and broke the drip-feed. Now the overseer wraps the current step in `<task>` tags. The exec workhorse prompt builder strips everything outside the tags. If no tags found, falls back to full text. Lives in prompts.ts exec workhorse builder.
+The workhorse saw the overseer's full response in exec mode. If the overseer mentioned future steps (which models do despite instructions), the workhorse implemented ahead and broke the drip-feed. Now the overseer wraps the current step in `<task>` tags. The exec workhorse prompt builder strips everything outside the tags. If no tags found, falls back to full text. Lives in exec.ts (prompts.ts was deleted when each mode absorbed its own prompts).
 
 ## Manual mode cwd resolution
 

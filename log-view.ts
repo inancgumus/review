@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RoundResult } from "./types.js";
+import { formatDuration } from "./status.js";
 const VERDICT_STRIP_RE = /\*{0,2}VERDICT:?\*{0,2}\s*\*{0,2}(APPROVED|CHANGES_REQUESTED)\*{0,2}/gi;
 
 // ── Runtime loading (absorbed from tui-runtime.ts) ──────
@@ -49,15 +50,6 @@ export function loadTui(): Promise<any> {
 	const tuiEntry = path.join(path.dirname(findPiEntry()), "..", "node_modules", "@mariozechner", "pi-tui", "dist", "index.js");
 	tuiModule = import(pathToFileURL(tuiEntry).href);
 	return tuiModule;
-}
-
-function formatDuration(ms: number): string {
-	var s = Math.floor(ms / 1000);
-	var m = Math.floor(s / 60);
-	var h = Math.floor(m / 60);
-	if (h > 0) return h + "h " + (m % 60) + "m";
-	if (m > 0) return m + "m " + (s % 60) + "s";
-	return s + "s";
 }
 
 function formatTime(ts: number): string {

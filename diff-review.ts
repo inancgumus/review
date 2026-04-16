@@ -22,7 +22,7 @@ interface Annotation {
 interface ReviewResult {
 	approved: boolean;
 	annotations: Annotation[];
-	/** Formatted feedback string for the workhorse, or empty if approved. */
+	/** Formatted feedback string, or empty if approved. */
 	feedback: string;
 }
 

@@ -1,6 +1,6 @@
 # Deep Modules — Remaining Fixes
 
-Status: fixes 1-6 done. Two new issues found in review.
+Status: all fixes done. Historical — kept for context on how the refactor unfolded. See DEEP_MODULES_PLAN.md for the current architecture.
 
 ## ⚠️ Process warning
 
@@ -19,7 +19,9 @@ Fixes 1-6 show a pattern: the workhorse took shortcuts and the overseer didn't c
 ## ✅ Fixed: 5. Missing test behaviors added
 ## ✅ Fixed: 6. seedDemoRounds extracted to demo.ts
 
-## 7. ManualDeps has 20 methods — fat interface defeats deep module purpose
+## ✅ Fixed: 7. ManualDeps has 20 methods — fat interface defeats deep module purpose
+
+Resolved by Phase 2: engine.ts was deleted entirely. Each mode now owns its loop top-to-bottom and talks to session.ts (a narrow infrastructure module), not to a ManualDeps umbilical cord. Original analysis below for reference.
 
 manual.ts was extracted from engine.ts. Good. But the seam is wrong.
 
@@ -72,12 +74,12 @@ interface ManualDeps {
 
 This may require manual.ts to delegate more back to engine. That's fine. The module boundary should be: manual.ts owns commit selection, editor review, and plannotator integration. Engine owns loop lifecycle, timing, status, model switching. If manual.ts needs to pause a timer, that's engine's job through a higher-level call (e.g. `engine.enterFeedbackPhase()`).
 
-## 8. snapshotContextHashes and changedContextPaths live in prompts.ts
+## ✅ Fixed: 8. snapshotContextHashes and changedContextPaths live in prompts.ts
+
+Resolved by Phase 2: prompts.ts was deleted. Each mode absorbed its own prompt builders. Context hashing lives in context.ts (snapshotContextHashes, findChangedContextPaths) where it belongs. Original analysis below for reference.
 
 These are context file hashing functions. They detect when @path files change between rounds. They have nothing to do with prompt building.
 
 They're in prompts.ts because context.ts was being absorbed and expandContextPaths went to prompts.ts, so the rest followed. Lazy placement.
 
 Only consumer: engine.ts.
-
-**Fix:** Move both into engine.ts. prompts.ts should only export `promptSets`.
