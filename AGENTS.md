@@ -13,7 +13,7 @@ Modules:
 - session.ts — wraps pi's event model into setModel()+send()→Promise. Absorbs agent_end into promises. Modes never see events.
 - status.ts — timer (start/stop/pause/elapsed/formatDuration). Tracks intervals via globalThis for ghost timer cleanup on hot reload. Modes own their status bar text.
 - verdicts.ts — wire protocol constants and parsing. matchVerdict, hasFixesComplete, sanitize.
-- context.ts — @path parsing, file reading, content hashing. Returns raw data, modes format for prompts.
+- context.ts — parses `@path` args (e.g. `/loop fix auth @src/login.ts`), reads files/dirs at those paths, hashes content for change detection. Returns raw data, modes format for prompts.
 - config.ts — settings persistence (loadConfig, saveConfigField).
 - git.ts — git operations (resolveRange, checkGitState, snapshotPatchIds). No mode knowledge.
 - review-workhorse.ts — shared review fix prompt + reconstructState. Used by both review modes.
