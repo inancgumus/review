@@ -8,7 +8,7 @@ All tests must pass after every step. No exceptions.
 
 ## Architecture principles
 
-Read ~/Desktop/goodarchitecture.md for the full rationale.
+See AGENTS.md for dev workflow. Read ~/Desktop/goodarchitecture.md for the full rationale. Always manually test changes with pi — run /loop, /loop:exec, /loop:manual against a real repo.
 
 - Deep modules: change one module, nothing else changes.
 - Each mode owns its loop top-to-bottom as a while loop with await. No shared cycle. No ModeConfig.
