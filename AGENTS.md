@@ -1,20 +1,27 @@
-# Loop Extension
+pi extension. See README.md for user docs.
 
-Three-mode loop for pi. See [README.md](README.md) for install, usage, and features.
+Architecture: read docs/DEEP_MODULES_PLAN.md and ~/Desktop/goodarchitecture.md before touching anything.
 
-## Docs
+Run tests: `npx tsx --test --test-timeout=15000 tests/*.test.ts`
+TDD only. Write a failing test first, see it fail, then fix. No exceptions.
+Integration tests only — import index.ts and verdicts.ts, never internal modules.
+Also manually test changes with pi (run /loop, /loop:exec, /loop:manual against a real repo).
 
-Update `README.md` when you change features, commands, or config. Update this file when you change dev workflow. Update `docs/E2E_TESTS.md` when you add test scenarios.
+Modules:
+- index.ts — entry point. Creates session+status+modes, registers commands, routes input. No logic beyond routing.
+- review-fresh.ts, review-incremental.ts, exec.ts, manual.ts — modes. Each owns its full loop top-to-bottom as a while loop with await. Modes never import each other.
+- session.ts — wraps pi's event model into setModel()+send()→Promise. Absorbs agent_end into promises. Modes never see events.
+- status.ts — timer (start/stop/pause/elapsed/formatDuration). Tracks intervals via globalThis for ghost timer cleanup on hot reload. Modes own their status bar text.
+- verdicts.ts — wire protocol constants and parsing. matchVerdict, hasFixesComplete, sanitize.
+- context.ts — @path parsing, file reading, content hashing. Returns raw data, modes format for prompts.
+- config.ts — settings persistence (loadConfig, saveConfigField).
+- git.ts — git operations (resolveRange, checkGitState, snapshotPatchIds). No mode knowledge.
+- review-workhorse.ts — shared review fix prompt + reconstructState. Used by both review modes.
+- diff-review.ts — editor-based commit annotation. Used by manual mode.
+- log-view.ts — TUI log viewer for /loop:log.
 
-## Code
-
-Modules split by responsibility. `index.ts` is the entry point (state machine + commands). Other files export pure functions. No classes. Plain functions and types. Keep it flat.
-
-## Tests
-
-Run all: `npx tsx --test tests/*.test.ts`
-
-Always apply TDD. We never test with unit tests. We only do high-level
-integration tests through our testing API. Besides automated testing, also
-manually test your changes with agent-tui and pi (no shortcuts). See 
-@docs/E2E_TESTS.md for manual testing.
+Dependencies flow downward only: modes → infrastructure → nothing. Infrastructure never imports modes.
+Infrastructure is generic — no mode-specific terms, formatting, or decisions. Treat every module as someone else's API you can't change.
+Timers: use trackInterval/untrackInterval from status.ts. killGhostTimers() in index.ts clears them on reload.
+Cancellation: session.stop() rejects pending promise with StopError. Modes catch it in try/catch and run cleanup.
+Cleanup: every mode has cleanup() that reads elapsed before stopping the timer. start() and resume() wrap setup in try/catch that calls cleanup on failure. state.phase="idle" is set after model restore completes.
