@@ -5,7 +5,7 @@ Architecture: read docs/DEEP_MODULES_PLAN.md and ~/Desktop/goodarchitecture.md b
 Run tests: `npx tsx --test --test-timeout=15000 tests/*.test.ts`
 TDD only. Write a failing test first, see it fail, then fix. No exceptions.
 Integration tests only — import index.ts and verdicts.ts, never internal modules.
-Also manually test changes with pi (run /loop, /loop:exec, /loop:manual against a real repo).
+Do not consider yourself done without manually testing changes with pi — run /loop, /loop:exec, /loop:manual against a real repo and verify the behavior.
 
 Modules:
 - index.ts — entry point. Creates session+status+modes, registers commands, routes input. No logic beyond routing.
