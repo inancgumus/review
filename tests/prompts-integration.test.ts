@@ -1068,3 +1068,36 @@ test("plannotator-backed manual /loop:resume resolves repo cwd, not home", async
 		repo.cleanup();
 	}
 });
+
+// ── Root commit unchanged detection ────────────────────
+
+test("incremental review detects unchanged root commit", async () => {
+	const repo = createTempRepo();
+	const saved = getLoopSetting("reviewMode", "fresh");
+	setLoopSetting("reviewMode", "incremental");
+	try {
+		// The init commit is the root. Add a file to it so it has a patch.
+		writeFileSync(join(repo.cwd, "root.txt"), "root content");
+		execSync("git add root.txt && git commit --amend -m 'root commit'", { cwd: repo.cwd });
+		const rootSha = execSync("git rev-parse HEAD", { cwd: repo.cwd, encoding: "utf-8" }).trim();
+
+		const h = createHarness(repo.cwd);
+		await h.commands.get("loop")!("check root", h.ctx);
+
+		// Overseer references the root commit
+		h.pushAssistant(`Check \`${rootSha.slice(0, 7)}\`\n\n${V_CHANGES}`);
+		await h.fireAgentEnd();
+
+		// Workhorse completes WITHOUT modifying the root
+		h.pushAssistant(`Fixed.\n\n${V_FIXES_COMPLETE}`);
+		await h.fireAgentEnd();
+
+		const round2 = h.userMessages[2];
+		assert.ok(round2, "round 2 overseer prompt exists");
+		assert.match(round2, /unchanged|not modified/i, "root commit flagged as unchanged");
+		await h.stopLoop();
+	} finally {
+		setLoopSetting("reviewMode", saved);
+		repo.cleanup();
+	}
+});

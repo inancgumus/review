@@ -707,9 +707,9 @@ export function createManualMode(session: Session, status: Status, opts?: Manual
 	// ── Stop ────────────────────────────────────────
 
 	async function stop(ctx: any): Promise<void> {
-		if (state.phase === "idle") return;
 		session.stop();
 		if (loopPromise) await loopPromise;
+		await doCleanup(ctx);
 	}
 
 	return {

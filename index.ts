@@ -15,7 +15,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { ReviewMode } from "./types.js";
 import { loadConfig, getScopedModels, saveConfigField, THINKING_LEVELS } from "./config.js";
 import { createSession } from "./session.js";
-import { createStatus } from "./status.js";
+import { createStatus, killGhostTimers } from "./status.js";
 import { createFreshReview } from "./review-fresh.js";
 import { createIncrementalReview } from "./review-incremental.js";
 import { createExecMode } from "./exec.js";
@@ -43,6 +43,10 @@ export default function (pi: ExtensionAPI, opts?: LoopExtensionOpts) {
 		plannotator,
 	});
 	const allModes = [fresh, incremental, exec, manual] as const;
+
+	// Kill ghost timers from previous extension instance (hot reload).
+	// Must run here — ESM caches modules so top-level code only executes once.
+	killGhostTimers();
 
 	function activeMode() {
 		return allModes.find(m => m.isRunning()) ?? null;
@@ -93,9 +97,12 @@ export default function (pi: ExtensionAPI, opts?: LoopExtensionOpts) {
 		description: "Stop the loop",
 		handler: async (_args, ctx) => {
 			const active = activeMode();
-			if (!active) { ctx.ui.notify("No loop running", "info"); return; }
-			ctx.ui.notify("Loop stopped", "info");
-			await active.stop(ctx);
+			if (active) {
+				ctx.ui.notify("Loop stopped", "info");
+				await active.stop(ctx);
+			}
+			// Always clear status bar — kills ghost timers from hot reloads
+			ctx.ui.setStatus("loop", "");
 		},
 	});
 

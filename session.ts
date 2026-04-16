@@ -142,6 +142,8 @@ export function createSession(pi: ExtensionAPI): Session {
 		if (!pendingResolve) return;
 		const { text, stopReason } = getLastAssistant(ctx);
 		if (stopReason === "abort" || stopReason === "aborted" || stopReason === "cancelled") {
+			// User pressed ESC / interrupted generation. End the loop gracefully
+			// so cleanup runs and a new loop can start.
 			const reject = pendingReject;
 			pendingResolve = null;
 			pendingReject = null;
