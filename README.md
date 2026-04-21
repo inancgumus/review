@@ -1,6 +1,6 @@
 # loop
 
-Coding agents generate code in a single pass. Nobody reviews it. The agent moves on, bugs and missed edge cases pile up. You can review everything yourself, but that gets old fast when the agent touches dozens of files, creating unsurmountable code slop churn.
+Coding agents generate code in a single pass. The agent moves on, bugs and missed edge cases pile up. You can review everything yourself, but that gets old fast when the agent touches dozens of files, creating unsurmountable code slop churn.
 
 Loop puts a second model in the reviewer seat. It reads what the first model wrote, flags problems, sends the work back for fixes. Repeats until the reviewer approves. You get reviewed code without doing the reviewing yourself.
 
